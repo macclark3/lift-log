@@ -53,6 +53,12 @@ const MUSCLE_GROUPS = ["Chest", "Back", "Shoulders", "Biceps", "Triceps", "Legs"
 const EQUIPMENT_TYPES = ["Barbell", "Dumbbell", "Cable", "Machine", "Bodyweight", "Kettlebell", "Other"];
 
 // --- HELPERS ---
+// tracksWeight defaults to true: legacy library entries (and exercises predating
+// this field) are weighted. Only an explicit `false` means bodyweight.
+function tracksWeightFor(libEx) {
+  return libEx?.tracksWeight !== false;
+}
+
 // Progression rule is configurable per exercise:
 //   "all"    – every set must hit the top of the rep range (conservative, good for compounds)
 //   "any"    – any single set hitting the top is enough (aggressive, good for isolation)
@@ -64,19 +70,21 @@ function getProgressionStatus(entry, libEx) {
   const sets = entry.reps.length;
   const hitTop = entry.reps.filter(r => r >= max).length;
   const anyBelowMin = entry.reps.some(r => r < min);
+  const weighted = tracksWeightFor(libEx);
+  const goal = weighted ? "bump the weight" : "push for more reps";
 
   let shouldBump = false;
   let bumpMessage = "";
   if (rule === "any") {
     shouldBump = sets >= 1 && hitTop >= 1;
-    bumpMessage = `Hit ${max}+ on a set — bump the weight`;
+    bumpMessage = `Hit ${max}+ on a set — ${goal}`;
   } else if (rule === "majority") {
     shouldBump = sets >= 2 && hitTop > sets / 2;
-    bumpMessage = `Hit ${max}+ on most sets — bump the weight`;
+    bumpMessage = `Hit ${max}+ on most sets — ${goal}`;
   } else {
     // "all" (default)
     shouldBump = sets >= 3 && hitTop === sets;
-    bumpMessage = `Hit ${max}+ on every set — bump the weight`;
+    bumpMessage = `Hit ${max}+ on every set — ${goal}`;
   }
 
   if (shouldBump) return { status: "bump", message: bumpMessage };
@@ -88,6 +96,12 @@ function suggestedNextWeight(entry, libEx) {
   // Use the exercise's configured increment, or fall back to a sensible default
   const increment = libEx?.increment ?? (entry.weight < 50 ? 2.5 : 5);
   return Math.round((entry.weight + increment) * 2) / 2;
+}
+
+// Next rep target for a bodyweight exercise that's earned a bump:
+// push past the top of the current range by one rep.
+function suggestedNextReps(entry) {
+  return entry.targetReps[1] + 1;
 }
 
 function formatDate(iso) {
@@ -630,7 +644,7 @@ function LevelUpAlerts({ recentExercisesList, exercises }) {
       <div className="space-y-2">
         {readyToBump.slice(0, 3).map(entry => {
           const libEx = libByName.get(entry.exercise);
-          const next = suggestedNextWeight(entry, libEx);
+          const weighted = tracksWeightFor(libEx);
           return (
             <div
               key={entry.id}
@@ -643,7 +657,11 @@ function LevelUpAlerts({ recentExercisesList, exercises }) {
               <div className="text-left">
                 <div className="font-semibold text-navy-900">{entry.exercise}</div>
                 <div className="text-xs text-navy-600 mt-0.5">
-                  Try <span className="mono font-semibold" style={{ color: "var(--accent)" }}>{next} {entry.unit}</span> next session
+                  {weighted ? (
+                    <>Try <span className="mono font-semibold" style={{ color: "var(--accent)" }}>{suggestedNextWeight(entry, libEx)} {entry.unit}</span> next session</>
+                  ) : (
+                    <>Hit <span className="mono font-semibold" style={{ color: "var(--accent)" }}>{suggestedNextReps(entry)}+ reps</span> next session</>
+                  )}
                 </div>
               </div>
               <ArrowUp size={20} style={{ color: "var(--accent)" }} />
@@ -731,7 +749,7 @@ function LibraryView({ exercises, lastByExercise, onCreate, onEdit, onSelect }) 
                     <div className="flex items-center gap-1.5 mt-1 text-xs text-navy-500 mono">
                       <span>{ex.targetReps[0]}–{ex.targetReps[1]} reps</span>
                       <span style={{ color: "var(--navy-200)" }}>·</span>
-                      <span>+{ex.increment ?? 5}{ex.unit}</span>
+                      <span>{tracksWeightFor(ex) ? `+${ex.increment ?? 5}${ex.unit}` : "bodyweight"}</span>
                       {ex.equipment && <><span style={{ color: "var(--navy-200)" }}>·</span><span>{ex.equipment}</span></>}
                       {last && <><span style={{ color: "var(--navy-200)" }}>·</span><span>last {formatDate(last.date)}</span></>}
                     </div>
@@ -781,10 +799,11 @@ function ExerciseEditView({ exercise, initialName, onSave, onDelete, onCancel })
   const [minReps, setMinReps] = useState(exercise?.targetReps[0] ?? 8);
   const [maxReps, setMaxReps] = useState(exercise?.targetReps[1] ?? 12);
   const [unit, setUnit] = useState(exercise?.unit || "lb");
+  const [tracksWeight, setTracksWeight] = useState(exercise ? exercise.tracksWeight !== false : true);
   const [bumpRule, setBumpRule] = useState(exercise?.bumpRule || "all");
   const [increment, setIncrement] = useState(exercise?.increment ?? 5);
 
-  const canSave = name.trim() && minReps > 0 && maxReps >= minReps && increment > 0;
+  const canSave = name.trim() && minReps > 0 && maxReps >= minReps && (!tracksWeight || increment > 0);
 
   const ruleDescription = {
     all: `every set hits ${maxReps}+ reps`,
@@ -831,6 +850,13 @@ function ExerciseEditView({ exercise, initialName, onSave, onDelete, onCancel })
           </div>
         </Field>
 
+        <Field label="Weight" hint="Bodyweight exercises track reps only — you can add a vest weight any time during a workout.">
+          <div className="flex gap-1.5">
+            <FilterChip active={tracksWeight} onClick={() => setTracksWeight(true)}>Uses weight</FilterChip>
+            <FilterChip active={!tracksWeight} onClick={() => setTracksWeight(false)}>Bodyweight</FilterChip>
+          </div>
+        </Field>
+
         {/* --- Progression rule section, visually grouped --- */}
         <div className="pt-2">
           <div className="text-[10px] uppercase tracking-[0.18em] text-navy-500 mono font-medium mb-2">Progression rule</div>
@@ -859,38 +885,45 @@ function ExerciseEditView({ exercise, initialName, onSave, onDelete, onCancel })
               </div>
             </div>
 
-            <div className="border-t border-soft pt-4">
-              <div className="text-xs font-semibold text-navy-900 mb-2">Weight increment</div>
-              <div className="flex items-center gap-2">
-                <button onClick={() => setIncrement(Math.max(0.5, Math.round((increment - 0.5) * 2) / 2))} className="w-10 h-10 rounded-lg flex items-center justify-center transition active:scale-95" style={{ background: "var(--navy-100)", color: "var(--navy-700)" }}>
-                  <Minus size={14} />
-                </button>
-                <input
-                  type="number"
-                  inputMode="decimal"
-                  step="0.5"
-                  value={increment}
-                  onChange={e => setIncrement(parseFloat(e.target.value) || 0)}
-                  className="w-24 surface border border-soft rounded-xl px-3 py-2.5 text-center text-base mono font-semibold focus:outline-none focus:border-strong text-navy-900"
-                />
-                <button onClick={() => setIncrement(Math.round((increment + 0.5) * 2) / 2)} className="w-10 h-10 rounded-lg flex items-center justify-center transition active:scale-95" style={{ background: "var(--navy-100)", color: "var(--navy-700)" }}>
-                  <Plus size={14} />
-                </button>
-                <span className="text-sm text-navy-500 mono ml-1">{unit}</span>
+            {tracksWeight && (
+              <div className="border-t border-soft pt-4">
+                <div className="text-xs font-semibold text-navy-900 mb-2">Weight increment</div>
+                <div className="flex items-center gap-2">
+                  <button onClick={() => setIncrement(Math.max(0.5, Math.round((increment - 0.5) * 2) / 2))} className="w-10 h-10 rounded-lg flex items-center justify-center transition active:scale-95" style={{ background: "var(--navy-100)", color: "var(--navy-700)" }}>
+                    <Minus size={14} />
+                  </button>
+                  <input
+                    type="number"
+                    inputMode="decimal"
+                    step="0.5"
+                    value={increment}
+                    onChange={e => setIncrement(parseFloat(e.target.value) || 0)}
+                    className="w-24 surface border border-soft rounded-xl px-3 py-2.5 text-center text-base mono font-semibold focus:outline-none focus:border-strong text-navy-900"
+                  />
+                  <button onClick={() => setIncrement(Math.round((increment + 0.5) * 2) / 2)} className="w-10 h-10 rounded-lg flex items-center justify-center transition active:scale-95" style={{ background: "var(--navy-100)", color: "var(--navy-700)" }}>
+                    <Plus size={14} />
+                  </button>
+                  <span className="text-sm text-navy-500 mono ml-1">{unit}</span>
+                </div>
+                <div className="mt-3 flex flex-wrap gap-1.5">
+                  {[2.5, 5, 10].map(val => (
+                    <FilterChip key={val} active={increment === val} onClick={() => setIncrement(val)}>{val} {unit}</FilterChip>
+                  ))}
+                </div>
               </div>
-              <div className="mt-3 flex flex-wrap gap-1.5">
-                {[2.5, 5, 10].map(val => (
-                  <FilterChip key={val} active={increment === val} onClick={() => setIncrement(val)}>{val} {unit}</FilterChip>
-                ))}
-              </div>
-            </div>
+            )}
 
             {/* Live preview */}
             <div className="border-t border-soft pt-4">
               <div className="text-[10px] uppercase tracking-[0.18em] text-navy-400 mono font-medium mb-1.5">In plain English</div>
               <div className="text-xs text-navy-700 leading-relaxed">
-                When <span className="font-semibold">{ruleDescription}</span>, the app will suggest going up by{" "}
-                <span className="mono font-semibold" style={{ color: "var(--accent)" }}>{increment} {unit}</span>.
+                {tracksWeight ? (
+                  <>When <span className="font-semibold">{ruleDescription}</span>, the app will suggest going up by{" "}
+                  <span className="mono font-semibold" style={{ color: "var(--accent)" }}>{increment} {unit}</span>.</>
+                ) : (
+                  <>When <span className="font-semibold">{ruleDescription}</span>, the app will nudge you to push past{" "}
+                  <span className="mono font-semibold" style={{ color: "var(--accent)" }}>{maxReps} reps</span> next session.</>
+                )}
               </div>
             </div>
           </div>
@@ -906,7 +939,7 @@ function ExerciseEditView({ exercise, initialName, onSave, onDelete, onCancel })
       <BottomBar>
         <button onClick={onCancel} className="flex-1 py-3 rounded-xl border border-soft text-navy-700 font-medium text-sm">Cancel</button>
         <button
-          onClick={() => canSave && onSave({ id: exercise?.id, name: name.trim(), muscle, equipment, targetReps: [minReps, maxReps], unit, bumpRule, increment })}
+          onClick={() => canSave && onSave({ id: exercise?.id, name: name.trim(), muscle, equipment, targetReps: [minReps, maxReps], unit, tracksWeight, bumpRule, increment })}
           disabled={!canSave}
           className="flex-1 py-3 rounded-xl text-white font-semibold text-sm disabled:opacity-30 transition"
           style={{ background: "var(--navy-900)" }}
@@ -1178,10 +1211,16 @@ function SessionDetailView({ session, entries, onUpdate, onDelete }) {
               <div key={entry.id} className="surface border border-soft card-shadow rounded-xl p-4">
                 <div className="font-semibold text-navy-900 mb-2">{entry.exercise}</div>
                 <div className="flex items-baseline gap-2">
-                  <div className="text-2xl font-semibold mono text-navy-900">{entry.weight}</div>
-                  <div className="text-navy-400 text-xs mono">{entry.unit}</div>
-                  <div className="text-navy-300 mono">×</div>
-                  <div className="text-navy-700 mono text-sm">{entry.reps.join(" · ")}</div>
+                  {entry.weight > 0 ? (
+                    <>
+                      <div className="text-2xl font-semibold mono text-navy-900">{entry.weight}</div>
+                      <div className="text-navy-400 text-xs mono">{entry.unit}</div>
+                      <div className="text-navy-300 mono">×</div>
+                      <div className="text-navy-700 mono text-sm">{entry.reps.join(" · ")}</div>
+                    </>
+                  ) : (
+                    <div className="text-2xl font-semibold mono text-navy-900">{entry.reps.join(" · ")}</div>
+                  )}
                 </div>
                 {entry.note && <div className="mt-2 text-xs text-navy-500 italic">"{entry.note}"</div>}
               </div>
@@ -1225,6 +1264,7 @@ function EditableEntry({ entry, onWeightChange, onRepsChange, onNoteChange, onAd
   const [confirmRemove, setConfirmRemove] = useState(false);
   const [editingWeight, setEditingWeight] = useState(false);
   const [weightDraft, setWeightDraft] = useState(String(entry.weight));
+  const [showWeightRow, setShowWeightRow] = useState(entry.weight > 0);
   const weightRef = useRef(null);
 
   useEffect(() => {
@@ -1266,33 +1306,42 @@ function EditableEntry({ entry, onWeightChange, onRepsChange, onNoteChange, onAd
       </div>
 
       {/* Weight row */}
-      <div className="mt-3 flex items-center gap-2">
-        <div className="text-[10px] uppercase tracking-[0.18em] text-navy-500 mono font-medium w-14">Weight</div>
-        {editingWeight ? (
-          <input
-            ref={weightRef}
-            type="number"
-            inputMode="decimal"
-            step="0.1"
-            value={weightDraft}
-            onChange={e => setWeightDraft(e.target.value)}
-            onBlur={commitWeight}
-            onKeyDown={e => {
-              if (e.key === "Enter") e.target.blur();
-              else if (e.key === "Escape") { setEditingWeight(false); setWeightDraft(String(entry.weight)); }
-            }}
-            className="w-20 surface-2 border border-soft rounded-lg px-2 py-1 text-base font-semibold mono text-center text-navy-900 focus:outline-none focus:border-strong"
-          />
-        ) : (
-          <button
-            onClick={() => { setWeightDraft(String(entry.weight)); setEditingWeight(true); }}
-            className="text-base font-semibold mono text-navy-900 hover:bg-navy-50 px-2 py-1 rounded-lg transition"
-          >
-            {entry.weight}
-          </button>
-        )}
-        <div className="text-xs text-navy-400 mono">{entry.unit}</div>
-      </div>
+      {showWeightRow ? (
+        <div className="mt-3 flex items-center gap-2">
+          <div className="text-[10px] uppercase tracking-[0.18em] text-navy-500 mono font-medium w-14">Weight</div>
+          {editingWeight ? (
+            <input
+              ref={weightRef}
+              type="number"
+              inputMode="decimal"
+              step="0.1"
+              value={weightDraft}
+              onChange={e => setWeightDraft(e.target.value)}
+              onBlur={commitWeight}
+              onKeyDown={e => {
+                if (e.key === "Enter") e.target.blur();
+                else if (e.key === "Escape") { setEditingWeight(false); setWeightDraft(String(entry.weight)); }
+              }}
+              className="w-20 surface-2 border border-soft rounded-lg px-2 py-1 text-base font-semibold mono text-center text-navy-900 focus:outline-none focus:border-strong"
+            />
+          ) : (
+            <button
+              onClick={() => { setWeightDraft(String(entry.weight)); setEditingWeight(true); }}
+              className="text-base font-semibold mono text-navy-900 hover:bg-navy-50 px-2 py-1 rounded-lg transition"
+            >
+              {entry.weight}
+            </button>
+          )}
+          <div className="text-xs text-navy-400 mono">{entry.unit}</div>
+        </div>
+      ) : (
+        <button
+          onClick={() => { setShowWeightRow(true); setWeightDraft(""); setEditingWeight(true); }}
+          className="mt-3 text-xs text-navy-500 hover:text-navy-900 flex items-center gap-1.5 transition"
+        >
+          <Plus size={12} /> Add weight
+        </button>
+      )}
 
       {/* Sets */}
       <div className="mt-3">
@@ -1553,7 +1602,7 @@ function ExerciseSearchSheet({ exercises, lastByExercise, excluded = [], onPick,
                     <div className="font-medium text-navy-900 truncate">{ex.name}</div>
                     <div className="flex items-center gap-1.5 mt-0.5 text-[11px] text-navy-500 mono">
                       {ex.muscle && <span>{ex.muscle}</span>}
-                      {last && <><span style={{ color: "var(--navy-200)" }}>·</span><span>{last.weight}{ex.unit} last {formatDate(last.date)}</span></>}
+                      {last && <><span style={{ color: "var(--navy-200)" }}>·</span><span>{last.weight > 0 ? `${last.weight}${ex.unit} ` : ""}last {formatDate(last.date)}</span></>}
                     </div>
                   </div>
                   <ChevronRight size={14} className="text-navy-300 shrink-0" />
@@ -1987,10 +2036,14 @@ function buildCsv(sessions, history) {
     const dateStr = d.toLocaleDateString("en-CA");
     const timeStr = d.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", hour12: false });
     const workoutName = session?.name || "";
+    // Bodyweight (or weight=0) entries: leave Weight empty so the CSV doesn't read
+    // as a misleading 0. Unit also drops out since there's nothing to qualify.
+    const weightCell = entry.weight > 0 ? entry.weight : "";
+    const unitCell = entry.weight > 0 ? entry.unit : "";
     entry.reps.forEach((reps, i) => {
       rows.push([
         dateStr, timeStr, workoutName, entry.exercise, i + 1,
-        entry.weight, entry.unit, reps, entry.note || "",
+        weightCell, unitCell, reps, entry.note || "",
       ]);
     });
   });
@@ -2084,8 +2137,14 @@ function ExerciseDetailView({ entries, libEx }) {
           <div className="text-[10px] uppercase tracking-[0.18em] text-white/60 mono font-medium">Last time · {formatDate(latest.date)}</div>
         </div>
         <div className="flex items-baseline gap-3">
-          <div className="text-5xl font-semibold tracking-tight mono text-white">{latest.weight}</div>
-          <div className="text-white/60 text-lg mono">{latest.unit}</div>
+          {latest.weight > 0 ? (
+            <>
+              <div className="text-5xl font-semibold tracking-tight mono text-white">{latest.weight}</div>
+              <div className="text-white/60 text-lg mono">{latest.unit}</div>
+            </>
+          ) : (
+            <div className="text-5xl font-semibold tracking-tight mono text-white">Bodyweight</div>
+          )}
         </div>
         <div className="mt-4 flex gap-2">
           {latest.reps.map((r, i) => (
@@ -2118,10 +2177,16 @@ function ExerciseDetailView({ entries, libEx }) {
                   <div className="text-[10px] text-navy-300 mono">vol {total}</div>
                 </div>
                 <div className="flex items-baseline gap-2">
-                  <div className="text-2xl font-semibold mono text-navy-900">{entry.weight}</div>
-                  <div className="text-navy-400 text-xs mono">{entry.unit}</div>
-                  <div className="text-navy-300 mono">×</div>
-                  <div className="text-navy-700 mono text-sm">{entry.reps.join(" · ")}</div>
+                  {entry.weight > 0 ? (
+                    <>
+                      <div className="text-2xl font-semibold mono text-navy-900">{entry.weight}</div>
+                      <div className="text-navy-400 text-xs mono">{entry.unit}</div>
+                      <div className="text-navy-300 mono">×</div>
+                      <div className="text-navy-700 mono text-sm">{entry.reps.join(" · ")}</div>
+                    </>
+                  ) : (
+                    <div className="text-2xl font-semibold mono text-navy-900">{entry.reps.join(" · ")}</div>
+                  )}
                 </div>
                 {entry.note && <div className="mt-2 text-xs text-navy-500 italic">"{entry.note}"</div>}
               </div>
@@ -2257,7 +2322,11 @@ function WorkoutView({ workout, setWorkout, exercises, lastByExercise, onCreateE
 
 function buildExerciseFromHistory(sourceEntry, libEx) {
   const prog = getProgressionStatus(sourceEntry, libEx);
-  const startWeight = prog?.status === "bump" ? suggestedNextWeight(sourceEntry, libEx) : sourceEntry.weight;
+  const weighted = tracksWeightFor(libEx);
+  // Bodyweight progression happens via reps, not weight, so don't pre-bump the weight value.
+  const startWeight = (weighted && prog?.status === "bump")
+    ? suggestedNextWeight(sourceEntry, libEx)
+    : sourceEntry.weight;
   return {
     exercise: sourceEntry.exercise,
     weight: startWeight,
@@ -2266,10 +2335,11 @@ function buildExerciseFromHistory(sourceEntry, libEx) {
     lastDate: sourceEntry.date,
     targetReps: libEx?.targetReps || sourceEntry.targetReps,
     unit: libEx?.unit || sourceEntry.unit,
+    tracksWeight: weighted,
     increment: libEx?.increment ?? (sourceEntry.weight < 50 ? 2.5 : 5),
     reps: [0, 0, 0],
     note: "",
-    bumped: prog?.status === "bump",
+    bumped: weighted && prog?.status === "bump",
   };
 }
 
@@ -2277,19 +2347,33 @@ function buildBlankExercise(name, libEx) {
   return {
     exercise: name, weight: 0, lastWeight: null, lastReps: [], lastDate: null,
     targetReps: libEx?.targetReps || [8, 12], unit: libEx?.unit || "lb",
+    tracksWeight: tracksWeightFor(libEx),
     increment: libEx?.increment ?? 5,
     reps: [0, 0, 0], note: "", bumped: false,
   };
 }
 
 function ActiveExercise({ ex, onUpdate, onRemove }) {
+  const isBodyweight = ex.tracksWeight === false;
   const [showNotes, setShowNotes] = useState(!!ex.note);
   const [restTimer, setRestTimer] = useState(null);
   const [restNow, setRestNow] = useState(Date.now());
   const [editingWeight, setEditingWeight] = useState(false);
   const [weightDraft, setWeightDraft] = useState("");
   const [confirmRemove, setConfirmRemove] = useState(false);
+  // For bodyweight exercises, hide the weight card by default. Reveal it if a
+  // weight is already set (e.g. vest from a prior session) or if the user taps
+  // the "Add weight" affordance.
+  const [showWeightCard, setShowWeightCard] = useState(!isBodyweight || ex.weight > 0);
   const weightInputRef = useRef(null);
+
+  // Re-evaluate visibility when switching between exercises in a multi-exercise workout.
+  // Only depends on ex.exercise — once the user reveals the card, typing the weight
+  // back to 0 shouldn't auto-hide it.
+  useEffect(() => {
+    setShowWeightCard(!isBodyweight || ex.weight > 0);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ex.exercise]);
 
   // Reset confirm state if exercise changes
   useEffect(() => { setConfirmRemove(false); }, [ex.exercise]);
@@ -2367,7 +2451,9 @@ function ActiveExercise({ ex, onUpdate, onRemove }) {
         <div className="surface border border-soft rounded-xl p-3 mb-3">
           <div className="flex items-center justify-between">
             <div className="text-[10px] uppercase tracking-[0.18em] text-navy-500 mono font-medium">Last time · {formatDate(ex.lastDate)}</div>
-            <div className="text-xs mono text-navy-700">{ex.lastWeight}{ex.unit} × {ex.lastReps.join("/")}</div>
+            <div className="text-xs mono text-navy-700">
+              {ex.lastWeight > 0 ? `${ex.lastWeight}${ex.unit} × ` : ""}{ex.lastReps.join("/")}
+            </div>
           </div>
         </div>
       ) : (
@@ -2376,45 +2462,54 @@ function ActiveExercise({ ex, onUpdate, onRemove }) {
         </div>
       )}
 
-      <div className="rounded-2xl p-5 card-shadow-lg" style={{ background: "linear-gradient(135deg, var(--navy-900) 0%, var(--navy-700) 100%)" }}>
-        <div className="text-[10px] uppercase tracking-[0.18em] text-white/60 mono font-medium mb-3">Weight</div>
-        <div className="flex items-center justify-between gap-3">
-          <button onClick={() => adjustWeight(-(ex.increment ?? 5))} className="w-12 h-12 rounded-full flex items-center justify-center transition shrink-0 active:scale-95" style={{ background: "rgba(255,255,255,0.12)", color: "white" }}>
-            <Minus size={18} />
-          </button>
-          <div className="flex-1 text-center">
-            {editingWeight ? (
-              <input
-                ref={weightInputRef}
-                type="number"
-                inputMode="decimal"
-                step="0.1"
-                value={weightDraft}
-                onChange={e => setWeightDraft(e.target.value)}
-                onBlur={commitWeightEdit}
-                onKeyDown={e => {
-                  if (e.key === "Enter") { e.target.blur(); }
-                  else if (e.key === "Escape") { cancelWeightEdit(); }
-                }}
-                className="w-full bg-transparent text-5xl font-semibold tracking-tight mono text-white text-center focus:outline-none"
-                style={{
-                  caretColor: "white",
-                  borderBottom: "2px solid rgba(255,255,255,0.5)",
-                  paddingBottom: "2px",
-                }}
-              />
-            ) : (
-              <button onClick={beginWeightEdit} className="w-full active:opacity-70 transition" aria-label="Edit weight">
-                <div className="text-5xl font-semibold tracking-tight mono text-white">{ex.weight}</div>
-              </button>
-            )}
-            <div className="text-white/60 text-xs mono mt-0.5">{ex.unit}{!editingWeight && <span className="ml-2 text-white/40 text-[10px]">tap to edit</span>}</div>
+      {showWeightCard ? (
+        <div className="rounded-2xl p-5 card-shadow-lg" style={{ background: "linear-gradient(135deg, var(--navy-900) 0%, var(--navy-700) 100%)" }}>
+          <div className="text-[10px] uppercase tracking-[0.18em] text-white/60 mono font-medium mb-3">Weight</div>
+          <div className="flex items-center justify-between gap-3">
+            <button onClick={() => adjustWeight(-(ex.increment ?? 5))} className="w-12 h-12 rounded-full flex items-center justify-center transition shrink-0 active:scale-95" style={{ background: "rgba(255,255,255,0.12)", color: "white" }}>
+              <Minus size={18} />
+            </button>
+            <div className="flex-1 text-center">
+              {editingWeight ? (
+                <input
+                  ref={weightInputRef}
+                  type="number"
+                  inputMode="decimal"
+                  step="0.1"
+                  value={weightDraft}
+                  onChange={e => setWeightDraft(e.target.value)}
+                  onBlur={commitWeightEdit}
+                  onKeyDown={e => {
+                    if (e.key === "Enter") { e.target.blur(); }
+                    else if (e.key === "Escape") { cancelWeightEdit(); }
+                  }}
+                  className="w-full bg-transparent text-5xl font-semibold tracking-tight mono text-white text-center focus:outline-none"
+                  style={{
+                    caretColor: "white",
+                    borderBottom: "2px solid rgba(255,255,255,0.5)",
+                    paddingBottom: "2px",
+                  }}
+                />
+              ) : (
+                <button onClick={beginWeightEdit} className="w-full active:opacity-70 transition" aria-label="Edit weight">
+                  <div className="text-5xl font-semibold tracking-tight mono text-white">{ex.weight}</div>
+                </button>
+              )}
+              <div className="text-white/60 text-xs mono mt-0.5">{ex.unit}{!editingWeight && <span className="ml-2 text-white/40 text-[10px]">tap to edit</span>}</div>
+            </div>
+            <button onClick={() => adjustWeight(ex.increment ?? 5)} className="w-12 h-12 rounded-full flex items-center justify-center transition shrink-0 active:scale-95" style={{ background: "rgba(255,255,255,0.12)", color: "white" }}>
+              <Plus size={18} />
+            </button>
           </div>
-          <button onClick={() => adjustWeight(ex.increment ?? 5)} className="w-12 h-12 rounded-full flex items-center justify-center transition shrink-0 active:scale-95" style={{ background: "rgba(255,255,255,0.12)", color: "white" }}>
-            <Plus size={18} />
-          </button>
         </div>
-      </div>
+      ) : (
+        <button
+          onClick={() => { setShowWeightCard(true); beginWeightEdit(); }}
+          className="text-xs text-navy-500 hover:text-navy-900 flex items-center gap-1.5 transition"
+        >
+          <Plus size={12} /> Add weight (e.g. vest, dumbbell)
+        </button>
+      )}
 
       <div className="mt-4">
         <div className="flex items-center justify-between mb-3">
