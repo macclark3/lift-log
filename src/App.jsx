@@ -6,23 +6,11 @@ import {
   User, Mail, Calendar, Ruler, Target, Download, Camera, LogOut, Settings
 } from "lucide-react";
 import { useLocalStorage } from "./hooks/useLocalStorage";
-import { supabase } from "./lib/supabase";
-
-// Temporary smoke test for the Supabase connection. Mounts once, logs success
-// or failure to the console, renders nothing. Remove once we've verified the
-// connection is healthy.
-function ConnectionTest() {
-  useEffect(() => {
-    supabase.from("exercises").select("count").then(({ error }) => {
-      if (error) {
-        console.error("[Supabase] connection test FAILED:", error);
-      } else {
-        console.log("[Supabase] connection test OK — query against `exercises` succeeded");
-      }
-    });
-  }, []);
-  return null;
-}
+import { useSessionState, signOut } from "./lib/auth";
+import { AuthGate } from "./auth/AuthGate";
+import { SetNewPasswordScreen } from "./auth/SetNewPasswordScreen";
+import { OnboardingScreen } from "./auth/OnboardingScreen";
+import { AuthLoading } from "./auth/AuthLayout";
 
 // --- SEED EXERCISES ---
 const seedExercises = [
@@ -271,9 +259,27 @@ export default function App() {
   const renderingWorkout = view?.type === "workout";
   const renderingDetail = view && !renderingWorkout;
 
+  // Auth state drives the top-level view. The order matters:
+  //   1. loading: don't flash the login form before we know the user state
+  //   2. password recovery: takes priority even over an active session
+  //   3. signed out: show login/signup/forgot
+  //   4. signed in but not onboarded: show the welcome form
+  //   5. signed in + onboarded: the existing app
+  const { session, loading: authLoading, isPasswordRecovery } = useSessionState();
+
+  const finishOnboarding = (patch) => {
+    setProfile({ ...profile, ...patch, onboarded: true });
+  };
+
+  let authShell = null;
+  if (authLoading) authShell = <AuthLoading />;
+  else if (isPasswordRecovery) authShell = <SetNewPasswordScreen />;
+  else if (!session) authShell = <AuthGate />;
+  else if (!profile.onboarded) {
+    authShell = <OnboardingScreen profile={profile} onComplete={finishOnboarding} />;
+  }
+
   return (
-    <>
-    <ConnectionTest />
     <div className="min-h-screen text-navy-900" style={{
       fontFamily: "'Inter', -apple-system, BlinkMacSystemFont, system-ui, sans-serif",
       background: "linear-gradient(180deg, #fafbfd 0%, #f1f4f9 100%)",
@@ -341,6 +347,7 @@ export default function App() {
         }
       `}</style>
 
+      {authShell || (
       <div className="max-w-md mx-auto min-h-screen relative grain" style={{ background: "var(--bg)" }}>
         <Header
           tab={tab}
@@ -432,8 +439,8 @@ export default function App() {
 
         {!renderingWorkout && !renderingDetail && <TabBar tab={tab} onChange={(t) => { setTab(t); resetView(); }} />}
       </div>
+      )}
     </div>
-    </>
   );
 }
 
@@ -1848,8 +1855,15 @@ function ProfileView({ profile, sessions, history, onEdit }) {
         </button>
       </div>
 
+      <button
+        onClick={signOut}
+        className="mt-8 w-full text-red-600 hover:text-red-700 py-3 text-sm font-medium flex items-center justify-center gap-2"
+      >
+        <LogOut size={14} /> Sign out
+      </button>
+
       {/* Footer note */}
-      <div className="mt-8 text-[11px] text-navy-400 text-center leading-relaxed px-4">
+      <div className="mt-6 text-[11px] text-navy-400 text-center leading-relaxed px-4">
         Multi-user support coming in a future update.
       </div>
 
@@ -2075,6 +2089,14 @@ function ProfileEditView({ profile, onSave, onCancel }) {
           <div className="flex flex-wrap gap-1.5">
             {["Strength", "Hypertrophy", "Endurance", "Weight loss", "General fitness"].map(g => (
               <FilterChip key={g} active={draft.goal === g} onClick={() => update({ goal: g })}>{g}</FilterChip>
+            ))}
+          </div>
+        </Field>
+
+        <Field label="Experience level">
+          <div className="flex flex-wrap gap-1.5">
+            {["Beginner", "Intermediate", "Advanced"].map(level => (
+              <FilterChip key={level} active={draft.experienceLevel === level} onClick={() => update({ experienceLevel: level })}>{level}</FilterChip>
             ))}
           </div>
         </Field>
