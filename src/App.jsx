@@ -960,6 +960,39 @@ function ExerciseEditView({ exercise, initialName, onSave, onDelete, onCancel })
   );
 }
 
+// Modal-over-sheet wrapper for ExerciseEditView. Used when the user opts to
+// create a new exercise from the in-workout or in-plan search sheet — sits at
+// a higher z-index than the search sheet (z-30) so it stacks above and can
+// dismiss back to it cleanly. Renders its own mini-header since it's outside
+// the routed Header's nav stack.
+function ExerciseEditModal({ initialName, onSave, onCancel }) {
+  const displayName = (initialName || "").trim() || "Untitled";
+  return (
+    <div className="fixed inset-0 z-40 overflow-y-auto" style={{ background: "var(--bg)" }}>
+      <div className="max-w-md mx-auto min-h-full">
+        <div className="sticky top-0 z-10 backdrop-blur-xl border-b border-soft pt-safe" style={{ background: "rgba(250, 251, 253, 0.85)" }}>
+          <div className="px-5 pt-5 pb-4 flex items-center gap-3">
+            <button onClick={onCancel} className="w-9 h-9 -ml-2 flex items-center justify-center text-navy-500 hover:text-navy-900 shrink-0 transition" aria-label="Cancel">
+              <ChevronLeft size={22} />
+            </button>
+            <div className="min-w-0 flex-1">
+              <div className="text-[10px] uppercase tracking-[0.18em] text-navy-400 mono font-medium">New exercise</div>
+              <h1 className="serif text-[26px] tracking-tight mt-0.5 truncate text-navy-900" style={{ fontWeight: 500 }}>
+                {displayName}
+              </h1>
+            </div>
+          </div>
+        </div>
+        <ExerciseEditView
+          initialName={initialName}
+          onSave={onSave}
+          onCancel={onCancel}
+        />
+      </div>
+    </div>
+  );
+}
+
 function RadioRow({ label, hint, active, onClick }) {
   return (
     <button
@@ -1463,6 +1496,8 @@ function PlanEditView({ plan, exercises, lastByExercise, onSave, onDelete, onCan
   const [description, setDescription] = useState(plan?.description || "");
   const [planExercises, setPlanExercises] = useState(plan?.exercises || []);
   const [showPicker, setShowPicker] = useState(false);
+  // When non-null, open the full ExerciseEditView as a modal pre-filled with this name.
+  const [pendingNewExerciseName, setPendingNewExerciseName] = useState(null);
 
   const move = (idx, dir) => {
     const target = idx + dir;
@@ -1474,9 +1509,12 @@ function PlanEditView({ plan, exercises, lastByExercise, onSave, onDelete, onCan
 
   const remove = (idx) => setPlanExercises(planExercises.filter((_, i) => i !== idx));
   const addExisting = (name) => { setPlanExercises([...planExercises, name]); setShowPicker(false); };
-  const handleCreateNew = (newName) => {
-    const created = onCreateExercise({ name: newName, muscle: "Other", equipment: "Other", targetReps: [8, 12], unit: "lb", bumpRule: "all", increment: 5 });
+  // Open the editor modal pre-filled with the typed name; defer creation until Save.
+  const handleCreateNew = (newName) => setPendingNewExerciseName(newName);
+  const handleSaveNewExercise = (payload) => {
+    const created = onCreateExercise(payload);
     setPlanExercises([...planExercises, created.name]);
+    setPendingNewExerciseName(null);
     setShowPicker(false);
   };
 
@@ -1486,6 +1524,13 @@ function PlanEditView({ plan, exercises, lastByExercise, onSave, onDelete, onCan
     <div className="px-5 pb-32">
       {showPicker && (
         <ExerciseSearchSheet exercises={exercises} lastByExercise={lastByExercise} excluded={planExercises} onPick={addExisting} onCreateNew={handleCreateNew} onClose={() => setShowPicker(false)} />
+      )}
+      {pendingNewExerciseName !== null && (
+        <ExerciseEditModal
+          initialName={pendingNewExerciseName}
+          onSave={handleSaveNewExercise}
+          onCancel={() => setPendingNewExerciseName(null)}
+        />
       )}
 
       <div className="mt-5 space-y-3">
@@ -2213,6 +2258,8 @@ function WorkoutView({ workout, setWorkout, exercises, lastByExercise, onCreateE
   const [activeIdx, setActiveIdx] = useState(Math.max(0, workout.exercises.length - 1));
   const [showFinish, setShowFinish] = useState(false);
   const [workoutName, setWorkoutName] = useState("");
+  // When non-null, open the full ExerciseEditView as a modal pre-filled with this name.
+  const [pendingNewExerciseName, setPendingNewExerciseName] = useState(null);
 
   useEffect(() => {
     if (workout.exercises.length === 0 && workout.planQueue.length > 0) {
@@ -2237,9 +2284,13 @@ function WorkoutView({ workout, setWorkout, exercises, lastByExercise, onCreateE
     setShowPicker(false);
   };
 
-  const handleCreateNew = (newName) => {
-    const created = onCreateExercise({ name: newName, muscle: "Other", equipment: "Other", targetReps: [8, 12], unit: "lb", bumpRule: "all", increment: 5 });
+  // Open the editor modal pre-filled with the typed name; defer creation until Save.
+  // addExercise itself closes the picker, so we only need to clear the modal state.
+  const handleCreateNew = (newName) => setPendingNewExerciseName(newName);
+  const handleSaveNewExercise = (payload) => {
+    const created = onCreateExercise(payload);
     addExercise(created.name);
+    setPendingNewExerciseName(null);
   };
 
   const updateExercise = (idx, patch) => {
@@ -2265,6 +2316,13 @@ function WorkoutView({ workout, setWorkout, exercises, lastByExercise, onCreateE
     return (
       <div className="px-5 pb-20 mt-5">
         <ExerciseSearchSheet exercises={exercises} lastByExercise={lastByExercise} excluded={workout.exercises.map(e => e.exercise)} onPick={addExercise} onCreateNew={handleCreateNew} onClose={() => workout.exercises.length > 0 && setShowPicker(false)} />
+        {pendingNewExerciseName !== null && (
+          <ExerciseEditModal
+            initialName={pendingNewExerciseName}
+            onSave={handleSaveNewExercise}
+            onCancel={() => setPendingNewExerciseName(null)}
+          />
+        )}
       </div>
     );
   }
