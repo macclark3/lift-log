@@ -414,7 +414,7 @@ function Header({ tab, view, activeWorkout, profile, onBack, onCancelWorkout, on
   const showProfileBubble = view?.type !== "workout" && view?.type !== "profile" && view?.type !== "profile-edit";
 
   return (
-    <div className="sticky top-0 z-10 backdrop-blur-xl border-b border-soft" style={{ background: "rgba(250, 251, 253, 0.85)" }}>
+    <div className="sticky top-0 z-10 backdrop-blur-xl border-b border-soft pt-safe" style={{ background: "rgba(250, 251, 253, 0.85)" }}>
       <div className="px-5 pt-5 pb-4 flex items-center justify-between gap-3">
         {showBack && (
           <button onClick={onBack} className="w-9 h-9 -ml-2 flex items-center justify-center text-navy-500 hover:text-navy-900 shrink-0 transition">
