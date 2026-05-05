@@ -70,6 +70,8 @@ Five top-level state collections, all persisted via `useLocalStorage`:
 
 Plus `activeWorkout` (also persisted, so a mid-session refresh doesn't lose progress).
 
+Two reserved fields exist on exercises and plans for forward-compatibility but have no UI today (beyond the bodyweight toggle in exercise edit): `tracksWeight` (boolean, defaults to true) on exercises, and `visibility` ('private' | 'public' | 'org', defaults to 'private') on both exercises and plans. The app currently treats everything as private and weighted unless explicitly flagged. See "Future / parked decisions" for what these are reserving for.
+
 Internally, height and weight are always stored metric. The `units` field controls display only. When units flip, the imperial inputs in the edit form re-derive from cm/kg cleanly.
 
 ## Progression logic (important — don't simplify)
@@ -137,6 +139,18 @@ The Health tab is currently a stub with placeholder cards. Don't fill it in piec
 - Confirm destructive actions with the inline tap-to-confirm pattern (single tap → button turns red and reads "Tap to confirm" → second tap commits, auto-cancels after 3s)
 - Bottom sheets for modals (with the little drag handle bar)
 - New flows should be reachable with minimal taps from Home — Mac uses this in the gym, not at a desk
+
+## Future / parked decisions
+
+These are real product directions Mac is interested in but explicitly deferred. Don't build any of them without an explicit ask, but be aware they exist so you don't accidentally close off the path.
+
+- **Organizations / gym memberships.** Gyms could have accounts and post workouts/plans visible only to their members. Real product work — needs membership lifecycle, permissions, billing, discovery flows. Not v1. Don't add an `organizations` table or any related schema until this is actively being designed.
+
+- **Public and semi-public content.** Three tiers envisioned: public (e.g. fitness influencer publishes plans available to everyone), org-scoped (gym shares with members only), and private (default, single user). The schema reserves a `visibility` field on plans and exercises with values 'private' | 'public' | 'org' to keep the option open, but the app currently treats everything as private. No UI for browsing or publishing yet.
+
+- **Time-based exercise tracking** (e.g. plank held for 90 seconds vs. plank as 90 reps). Currently tracked as reps with seconds-as-the-unit, which works but is semantically loose. A real implementation would add a `tracking_mode` field ('reps' | 'time' | 'distance') on exercises and adapt the active workout UI accordingly. Defer until a user actually complains about it.
+
+- **Apple Health integration** — listed elsewhere; reiterating here that this requires a Capacitor or native iOS wrapper, not just PWA. Don't try to bolt it on inside the PWA.
 
 ## When in doubt
 
