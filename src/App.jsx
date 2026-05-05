@@ -1986,6 +1986,12 @@ function ProfileEditView({ profile, onSave, onCancel }) {
 
   const canSave = draft.name.trim();
 
+  // DOB picker bounds: today on the upper end, 100 years ago on the lower
+  // so the year-scroll doesn't run away.
+  const maxBirthDate = new Date().toISOString().split("T")[0];
+  const minBirthDate = new Date(Date.now() - 100 * 365.25 * 24 * 60 * 60 * 1000)
+    .toISOString().split("T")[0];
+
   return (
     <div className="px-5 pb-32">
       {/* Photo */}
@@ -2037,7 +2043,7 @@ function ProfileEditView({ profile, onSave, onCancel }) {
         </Field>
 
         <Field label="Date of birth">
-          <input type="date" value={draft.dateOfBirth || ""} onChange={e => update({ dateOfBirth: e.target.value })} className="w-full surface border border-soft rounded-xl px-4 py-3 text-base focus:outline-none focus:border-strong text-navy-900" />
+          <input type="date" min={minBirthDate} max={maxBirthDate} value={draft.dateOfBirth || ""} onChange={e => update({ dateOfBirth: e.target.value })} className="w-full surface border border-soft rounded-xl px-4 py-3 text-base focus:outline-none focus:border-strong text-navy-900" />
         </Field>
 
         <Field label="Gender">

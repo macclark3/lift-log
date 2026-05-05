@@ -26,6 +26,13 @@ export function SignupScreen({ onSwitchToLogin }) {
   const [submitting, setSubmitting] = useState(false);
   const [needsConfirmation, setNeedsConfirmation] = useState(false);
 
+  // Picker bounds: today caps the future side; 100 years ago caps the past
+  // side so the year-scroll wheel doesn't go forever. The 13-year-old check
+  // below is still authoritative — these are UX rails, not validation.
+  const maxBirthDate = new Date().toISOString().split("T")[0];
+  const minBirthDate = new Date(Date.now() - 100 * 365.25 * 24 * 60 * 60 * 1000)
+    .toISOString().split("T")[0];
+
   const handleSubmit = async (e) => {
     e.preventDefault();
     setError(null);
@@ -126,6 +133,8 @@ export function SignupScreen({ onSwitchToLogin }) {
           <input
             type="date"
             required
+            min={minBirthDate}
+            max={maxBirthDate}
             value={dob}
             onChange={e => setDob(e.target.value)}
             className="w-full surface-2 border border-soft rounded-xl px-4 py-3 text-base focus:outline-none focus:border-strong text-navy-900"
