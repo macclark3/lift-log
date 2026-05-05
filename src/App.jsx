@@ -6,6 +6,23 @@ import {
   User, Mail, Calendar, Ruler, Target, Download, Camera, LogOut, Settings
 } from "lucide-react";
 import { useLocalStorage } from "./hooks/useLocalStorage";
+import { supabase } from "./lib/supabase";
+
+// Temporary smoke test for the Supabase connection. Mounts once, logs success
+// or failure to the console, renders nothing. Remove once we've verified the
+// connection is healthy.
+function ConnectionTest() {
+  useEffect(() => {
+    supabase.from("exercises").select("count").then(({ error }) => {
+      if (error) {
+        console.error("[Supabase] connection test FAILED:", error);
+      } else {
+        console.log("[Supabase] connection test OK — query against `exercises` succeeded");
+      }
+    });
+  }, []);
+  return null;
+}
 
 // --- SEED EXERCISES ---
 const seedExercises = [
@@ -255,6 +272,8 @@ export default function App() {
   const renderingDetail = view && !renderingWorkout;
 
   return (
+    <>
+    <ConnectionTest />
     <div className="min-h-screen text-navy-900" style={{
       fontFamily: "'Inter', -apple-system, BlinkMacSystemFont, system-ui, sans-serif",
       background: "linear-gradient(180deg, #fafbfd 0%, #f1f4f9 100%)",
@@ -414,6 +433,7 @@ export default function App() {
         {!renderingWorkout && !renderingDetail && <TabBar tab={tab} onChange={(t) => { setTab(t); resetView(); }} />}
       </div>
     </div>
+    </>
   );
 }
 

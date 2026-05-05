@@ -34,7 +34,24 @@ From inside this folder:
 npm install
 ```
 
-This pulls down React, Vite, Tailwind, lucide-react (the icons), and the PWA plugin. Takes a minute the first time.
+This pulls down React, Vite, Tailwind, lucide-react (the icons), the Supabase client, and the PWA plugin. Takes a minute the first time.
+
+## Environment setup
+
+The app needs Supabase credentials to talk to the backend. Copy the example file and fill in your project values:
+
+```bash
+cp .env.example .env
+```
+
+Then open `.env` and set:
+
+- `VITE_SUPABASE_URL` — your project URL (looks like `https://abcdefg.supabase.co`), found in Supabase project settings → API.
+- `VITE_SUPABASE_PUBLISHABLE_KEY` — your project's publishable (anon) key, also from project settings → API.
+
+`.env` is gitignored — never commit it. `.env.example` is the template that lives in the repo.
+
+**Restart `npm run dev` after editing `.env`.** Vite reads env vars at server start, so changes don't pick up live.
 
 ## Step 3 — Run it locally
 
