@@ -9,8 +9,8 @@ export default defineConfig({
       registerType: "autoUpdate",
       includeAssets: ["favicon.svg", "apple-touch-icon.png"],
       manifest: {
-        name: "Lift Log",
-        short_name: "Lift Log",
+        name: "Spotter",
+        short_name: "Spotter",
         description: "Personal workout tracker",
         theme_color: "#0a1f3d",
         background_color: "#fafbfd",

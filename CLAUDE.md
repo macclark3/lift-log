@@ -1,6 +1,6 @@
-# Lift Log — Project Context
+# Spotter — Project Context
 
-This file gives you (Claude Code) the design context for Lift Log. Mac built this with another Claude instance over a long conversation; this is the condensed handoff. Read it before making changes so you preserve the design decisions and don't undo intentional choices.
+This file gives you (Claude Code) the design context for Spotter. Mac built this with another Claude instance over a long conversation; this is the condensed handoff. Read it before making changes so you preserve the design decisions and don't undo intentional choices.
 
 ## What this is
 
@@ -110,7 +110,7 @@ Multi-exercise workouts show pill tabs at the top to switch between exercises. F
 
 ## Things that look like UX choices but are deliberate
 
-- **The serif "Lift Log" wordmark and screen titles** are intentional — gives the app character. Don't switch to all-Inter.
+- **The serif "Spotter" wordmark and screen titles** are intentional — gives the app character. Don't switch to all-Inter.
 - **Volume calculation converts each entry to the user's preferred unit before summing** — this is correct, do not simplify. Mixed lb/kg history would break otherwise.
 - **The "tap to edit" hint on the weight display disappears on first edit** — small detail, but signals the affordance only when needed.
 - **CSV export has a fallback modal** that shows the CSV inline with a copy button if direct download is blocked (sandboxed iframes). Don't remove this fallback.

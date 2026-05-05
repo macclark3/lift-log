@@ -396,7 +396,7 @@ export default function App() {
 
 // --- HEADER ---
 function Header({ tab, view, activeWorkout, profile, onBack, onCancelWorkout, onOpenProfile }) {
-  const titleMap = { home: "Lift Log", past: "Past Workouts", plans: "Workout Plans", health: "Health" };
+  const titleMap = { home: "Spotter", past: "Past Workouts", plans: "Workout Plans", health: "Health" };
   let label = new Date().toLocaleDateString("en-US", { weekday: "long" });
   let title = titleMap[tab];
   let titleClass = "serif";
@@ -2008,7 +2008,7 @@ function buildCsv(sessions, history) {
 function csvFilename(profile) {
   const dateStamp = new Date().toISOString().split("T")[0];
   const safeName = (profile.name || "user").toLowerCase().replace(/\s+/g, "-");
-  return `lift-log-${safeName}-${dateStamp}.csv`;
+  return `spotter-${safeName}-${dateStamp}.csv`;
 }
 
 // Returns true if download succeeded, false if it was blocked or unavailable

@@ -1,4 +1,4 @@
-# Lift Log
+# Spotter
 
 Personal workout tracker. Built as a PWA (Progressive Web App) so it installs to your phone home screen and works offline.
 
@@ -6,7 +6,7 @@ Personal workout tracker. Built as a PWA (Progressive Web App) so it installs to
 
 A complete Vite + React project with:
 
-- The full Lift Log UI (your existing tracker)
+- The full Spotter UI (your existing tracker)
 - localStorage persistence — your data survives refresh, app close, phone restart
 - PWA setup — installs to iPhone home screen, runs full-screen, works offline
 - Tailwind CSS configured
@@ -74,7 +74,7 @@ git init
 git add .
 git commit -m "Initial commit"
 git branch -M main
-git remote add origin https://github.com/YOUR-USERNAME/lift-log.git
+git remote add origin https://github.com/YOUR-USERNAME/spotter.git
 git push -u origin main
 ```
 
@@ -84,9 +84,9 @@ Easiest deploy in the world. Free tier handles this no problem.
 
 1. Go to [vercel.com](https://vercel.com) → Sign up with GitHub
 2. Click **Add New → Project**
-3. Pick your `lift-log` repo
+3. Pick your `spotter` repo
 4. Vercel auto-detects Vite. Just click **Deploy**
-5. Wait ~30 seconds. You get a URL like `lift-log-abc123.vercel.app`
+5. Wait ~30 seconds. You get a URL like `spotter-abc123.vercel.app`
 
 That URL is now live on the internet, with HTTPS, free.
 
@@ -98,7 +98,7 @@ That URL is now live on the internet, with HTTPS, free.
 4. Scroll down → tap **Add to Home Screen**
 5. Confirm the name → tap **Add**
 
-You now have a Lift Log icon on your home screen. Tap it. It opens full-screen, no browser chrome, looks and feels like a native app.
+You now have a Spotter icon on your home screen. Tap it. It opens full-screen, no browser chrome, looks and feels like a native app.
 
 ## Step 8 — Use it at the gym
 
@@ -140,7 +140,7 @@ The placeholder icon is a navy dumbbell — clean but generic. To replace:
 
 **Data disappeared on phone** → Safari occasionally clears localStorage if storage is full or the app hasn't been opened in a while. For real durability long-term, the next upgrade is moving to IndexedDB or syncing to a backend.
 
-**Need to wipe all data and start fresh** → In Safari, Settings → Safari → Advanced → Website Data → search "lift-log" → swipe to delete. Or in dev tools on your computer: Application → Storage → Clear site data.
+**Need to wipe all data and start fresh** → In Safari, Settings → Safari → Advanced → Website Data → search "spotter" → swipe to delete. Or in dev tools on your computer: Application → Storage → Clear site data.
 
 ## What's next (v2 ideas)
 
