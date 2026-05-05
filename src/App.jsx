@@ -148,13 +148,20 @@ export default function App() {
     memberSince: new Date().toISOString().split("T")[0],
   });
   const [tab, setTab] = useState("home");
-  const [view, setView] = useState(null);
+  // Navigation is a stack: each pushView appends, popView trims the last entry,
+  // resetView clears it. The current view is the top of the stack (or null when
+  // the user is sitting on a top-level tab).
+  const [viewStack, setViewStack] = useState([]);
+  const view = viewStack[viewStack.length - 1] || null;
+  const pushView = (v) => setViewStack(stack => [...stack, v]);
+  const popView = () => setViewStack(stack => stack.slice(0, -1));
+  const resetView = () => setViewStack([]);
   const [activeWorkout, setActiveWorkout] = useLocalStorage("activeWorkout", null);
 
   // If we have an active workout when the app loads, drop the user back into it
   useEffect(() => {
-    if (activeWorkout && !view) {
-      setView({ type: "workout" });
+    if (activeWorkout && viewStack.length === 0) {
+      setViewStack([{ type: "workout" }]);
     }
     // Only run on mount — we want this exactly once
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -191,12 +198,13 @@ export default function App() {
   const startWorkout = (planExercises = null) => {
     const id = `w${Date.now()}`;
     setActiveWorkout({ id, startedAt: new Date().toISOString(), exercises: [], planQueue: planExercises || [] });
-    setView({ type: "workout" });
+    // Workout is a top-level mode, not a child of whatever the user was browsing
+    setViewStack([{ type: "workout" }]);
   };
 
   const finishWorkout = (workoutName) => {
     if (!activeWorkout || activeWorkout.exercises.length === 0) {
-      setActiveWorkout(null); setView(null); return;
+      setActiveWorkout(null); resetView(); return;
     }
     const completed = activeWorkout.exercises.filter(ex => ex.reps.some(r => r > 0));
     const newEntries = completed.map((ex, i) => ({
@@ -212,10 +220,10 @@ export default function App() {
     }));
     setHistory([...newEntries, ...history]);
     setSessions([{ id: activeWorkout.id, startedAt: activeWorkout.startedAt, endedAt: new Date().toISOString(), name: workoutName || "Workout" }, ...sessions]);
-    setActiveWorkout(null); setView(null); setTab("home");
+    setActiveWorkout(null); resetView(); setTab("home");
   };
 
-  const cancelWorkout = () => { setActiveWorkout(null); setView(null); setTab("home"); };
+  const cancelWorkout = () => { setActiveWorkout(null); resetView(); setTab("home"); };
 
   const updateSession = (sessionId, sessionPatch, updatedEntries) => {
     // sessionPatch: partial fields to update on the session (e.g. name)
@@ -233,15 +241,15 @@ export default function App() {
   const deleteSession = (sessionId) => {
     setSessions(sessions.filter(s => s.id !== sessionId));
     setHistory(history.filter(h => h.workoutId !== sessionId));
-    setView(null);
+    popView();
   };
 
   const savePlan = (plan) => {
     if (plan.id) setPlans(plans.map(p => p.id === plan.id ? plan : p));
     else setPlans([...plans, { ...plan, id: `p${Date.now()}` }]);
-    setView(null);
+    popView();
   };
-  const deletePlan = (id) => { setPlans(plans.filter(p => p.id !== id)); setView(null); };
+  const deletePlan = (id) => { setPlans(plans.filter(p => p.id !== id)); popView(); };
 
   const renderingWorkout = view?.type === "workout";
   const renderingDetail = view && !renderingWorkout;
@@ -320,9 +328,9 @@ export default function App() {
           view={view}
           activeWorkout={activeWorkout}
           profile={profile}
-          onBack={() => setView(null)}
+          onBack={popView}
           onCancelWorkout={cancelWorkout}
-          onOpenProfile={() => setView({ type: "profile" })}
+          onOpenProfile={() => pushView({ type: "profile" })}
         />
 
         {!renderingDetail && !renderingWorkout && (
@@ -336,16 +344,16 @@ export default function App() {
                 exercises={exercises}
                 onStartBlank={() => startWorkout()}
                 onStartFromPlan={(plan) => startWorkout(plan.exercises)}
-                onSelectExercise={(name) => setView({ type: "exercise", name })}
-                onSelectSession={(id) => setView({ type: "session", id })}
-                onOpenLibrary={() => setView({ type: "library" })}
+                onSelectExercise={(name) => pushView({ type: "exercise", name })}
+                onSelectSession={(id) => pushView({ type: "session", id })}
+                onOpenLibrary={() => pushView({ type: "library" })}
               />
             )}
             {tab === "past" && (
-              <PastView sessions={sessions} history={history} onSelectSession={(id) => setView({ type: "session", id })} />
+              <PastView sessions={sessions} history={history} onSelectSession={(id) => pushView({ type: "session", id })} />
             )}
             {tab === "plans" && (
-              <PlansView plans={plans} onCreate={() => setView({ type: "plan-edit", id: null })} onEdit={(id) => setView({ type: "plan-edit", id })} onUse={(plan) => startWorkout(plan.exercises)} />
+              <PlansView plans={plans} onCreate={() => pushView({ type: "plan-edit", id: null })} onEdit={(id) => pushView({ type: "plan-edit", id })} onUse={(plan) => startWorkout(plan.exercises)} />
             )}
             {tab === "health" && <HealthView />}
           </>
@@ -366,21 +374,22 @@ export default function App() {
           />
         )}
         {view?.type === "plan-edit" && (
-          <PlanEditView plan={view.id ? plans.find(p => p.id === view.id) : null} exercises={exercises} lastByExercise={lastByExercise} onSave={savePlan} onDelete={deletePlan} onCancel={() => setView(null)} onCreateExercise={addExerciseToLibrary} />
+          <PlanEditView plan={view.id ? plans.find(p => p.id === view.id) : null} exercises={exercises} lastByExercise={lastByExercise} onSave={savePlan} onDelete={deletePlan} onCancel={popView} onCreateExercise={addExerciseToLibrary} />
         )}
         {view?.type === "library" && (
-          <LibraryView exercises={exercises} lastByExercise={lastByExercise} onCreate={() => setView({ type: "exercise-edit", id: null })} onEdit={(id) => setView({ type: "exercise-edit", id })} onSelect={(name) => setView({ type: "exercise", name })} />
+          <LibraryView exercises={exercises} lastByExercise={lastByExercise} onCreate={() => pushView({ type: "exercise-edit", id: null })} onEdit={(id) => pushView({ type: "exercise-edit", id })} onSelect={(name) => pushView({ type: "exercise", name })} />
         )}
         {view?.type === "exercise-edit" && (
           <ExerciseEditView
             exercise={view.id ? exercises.find(e => e.id === view.id) : null}
             initialName={view.initialName}
             onSave={(ex) => {
-              if (ex.id) { updateExerciseInLibrary(ex.id, ex); setView({ type: "library" }); }
-              else { addExerciseToLibrary(ex); setView({ type: "library" }); }
+              if (ex.id) updateExerciseInLibrary(ex.id, ex);
+              else addExerciseToLibrary(ex);
+              popView();
             }}
-            onDelete={(id) => { deleteExerciseFromLibrary(id); setView({ type: "library" }); }}
-            onCancel={() => setView({ type: "library" })}
+            onDelete={(id) => { deleteExerciseFromLibrary(id); popView(); }}
+            onCancel={popView}
           />
         )}
         {view?.type === "profile" && (
@@ -388,21 +397,21 @@ export default function App() {
             profile={profile}
             sessions={sessions}
             history={history}
-            onEdit={() => setView({ type: "profile-edit" })}
+            onEdit={() => pushView({ type: "profile-edit" })}
           />
         )}
         {view?.type === "profile-edit" && (
           <ProfileEditView
             profile={profile}
-            onSave={(p) => { setProfile(p); setView({ type: "profile" }); }}
-            onCancel={() => setView({ type: "profile" })}
+            onSave={(p) => { setProfile(p); popView(); }}
+            onCancel={popView}
           />
         )}
         {renderingWorkout && activeWorkout && (
           <WorkoutView workout={activeWorkout} setWorkout={setActiveWorkout} exercises={exercises} lastByExercise={lastByExercise} onCreateExercise={addExerciseToLibrary} onFinish={finishWorkout} />
         )}
 
-        {!renderingWorkout && !renderingDetail && <TabBar tab={tab} onChange={setTab} />}
+        {!renderingWorkout && !renderingDetail && <TabBar tab={tab} onChange={(t) => { setTab(t); resetView(); }} />}
       </div>
     </div>
   );
