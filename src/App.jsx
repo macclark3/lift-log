@@ -3,11 +3,13 @@ import {
   TrendingUp, Plus, Check, ChevronRight, Dumbbell, Clock, Flame, ArrowUp, Minus,
   Play, X, Edit3, History, ListChecks, Heart, Home, Trash2, ChevronLeft, GripVertical,
   Activity, Footprints, Trophy, Scale, Search, Library, Sparkles,
-  User, Mail, Calendar, Ruler, Target, Download, Camera, LogOut, Settings
+  User, Mail, Calendar, Ruler, Target, Download, Camera, LogOut, Settings,
+  Smartphone
 } from "lucide-react";
 import { useLocalStorage } from "./hooks/useLocalStorage";
 import { useSessionState, signOut } from "./lib/auth";
 import { supabase } from "./lib/supabase";
+import { focusToEnd } from "./lib/inputs";
 import { AuthGate } from "./auth/AuthGate";
 import { SetNewPasswordScreen } from "./auth/SetNewPasswordScreen";
 import { OnboardingScreen } from "./auth/OnboardingScreen";
@@ -408,7 +410,19 @@ export default function App() {
   }
 
   return (
-    <div className="min-h-screen text-navy-900" style={{
+    <>
+    <div
+      className="rotate-warning min-h-screen flex-col items-center justify-center px-6 text-center"
+      style={{
+        fontFamily: "'Inter', -apple-system, BlinkMacSystemFont, system-ui, sans-serif",
+        background: "linear-gradient(180deg, #fafbfd 0%, #f1f4f9 100%)",
+      }}
+    >
+      <Smartphone size={28} className="text-navy-700 mb-3" />
+      <div className="serif text-navy-900 text-xl mb-1" style={{ fontWeight: 500 }}>Rotate to portrait</div>
+      <div className="text-sm text-navy-500 max-w-xs">Spotter works best in portrait. Please rotate your device.</div>
+    </div>
+    <div className="app-content min-h-screen text-navy-900" style={{
       fontFamily: "'Inter', -apple-system, BlinkMacSystemFont, system-ui, sans-serif",
       background: "linear-gradient(180deg, #fafbfd 0%, #f1f4f9 100%)",
       color: "#0a1f3d",
@@ -573,6 +587,7 @@ export default function App() {
       </div>
       )}
     </div>
+    </>
   );
 }
 
@@ -1004,9 +1019,9 @@ function ExerciseEditView({ exercise, initialName, onSave, onDelete, onCancel })
 
         <Field label="Target rep range">
           <div className="flex items-center gap-2">
-            <input type="number" inputMode="numeric" value={minReps} onChange={e => setMinReps(parseInt(e.target.value) || 0)} className="w-20 surface border border-soft rounded-xl px-3 py-3 text-center text-base mono focus:outline-none focus:border-strong text-navy-900" />
+            <input type="number" inputMode="numeric" value={minReps || ""} onChange={e => setMinReps(parseInt(e.target.value) || 0)} onFocus={focusToEnd} className="w-20 surface border border-soft rounded-xl px-3 py-3 text-center text-base mono focus:outline-none focus:border-strong text-navy-900" />
             <span className="text-navy-400">–</span>
-            <input type="number" inputMode="numeric" value={maxReps} onChange={e => setMaxReps(parseInt(e.target.value) || 0)} className="w-20 surface border border-soft rounded-xl px-3 py-3 text-center text-base mono focus:outline-none focus:border-strong text-navy-900" />
+            <input type="number" inputMode="numeric" value={maxReps || ""} onChange={e => setMaxReps(parseInt(e.target.value) || 0)} onFocus={focusToEnd} className="w-20 surface border border-soft rounded-xl px-3 py-3 text-center text-base mono focus:outline-none focus:border-strong text-navy-900" />
             <span className="text-sm text-navy-500">reps</span>
           </div>
         </Field>
@@ -1064,8 +1079,9 @@ function ExerciseEditView({ exercise, initialName, onSave, onDelete, onCancel })
                     type="number"
                     inputMode="decimal"
                     step="0.5"
-                    value={increment}
+                    value={increment || ""}
                     onChange={e => setIncrement(parseFloat(e.target.value) || 0)}
+                    onFocus={focusToEnd}
                     className="w-24 surface border border-soft rounded-xl px-3 py-2.5 text-center text-base mono font-semibold focus:outline-none focus:border-strong text-navy-900"
                   />
                   <button onClick={() => setIncrement(Math.round((increment + 0.5) * 2) / 2)} className="w-10 h-10 rounded-lg flex items-center justify-center transition active:scale-95" style={{ background: "var(--navy-100)", color: "var(--navy-700)" }}>
@@ -1464,7 +1480,7 @@ function EditableEntry({ entry, onWeightChange, onRepsChange, onNoteChange, onAd
   const [showNote, setShowNote] = useState(!!entry.note);
   const [confirmRemove, setConfirmRemove] = useState(false);
   const [editingWeight, setEditingWeight] = useState(false);
-  const [weightDraft, setWeightDraft] = useState(String(entry.weight));
+  const [weightDraft, setWeightDraft] = useState(entry.weight > 0 ? String(entry.weight) : "");
   const [showWeightRow, setShowWeightRow] = useState(entry.weight > 0);
   const weightRef = useRef(null);
 
@@ -1519,15 +1535,16 @@ function EditableEntry({ entry, onWeightChange, onRepsChange, onNoteChange, onAd
               value={weightDraft}
               onChange={e => setWeightDraft(e.target.value)}
               onBlur={commitWeight}
+              onFocus={focusToEnd}
               onKeyDown={e => {
                 if (e.key === "Enter") e.target.blur();
-                else if (e.key === "Escape") { setEditingWeight(false); setWeightDraft(String(entry.weight)); }
+                else if (e.key === "Escape") { setEditingWeight(false); setWeightDraft(entry.weight > 0 ? String(entry.weight) : ""); }
               }}
               className="w-20 surface-2 border border-soft rounded-lg px-2 py-1 text-base font-semibold mono text-center text-navy-900 focus:outline-none focus:border-strong"
             />
           ) : (
             <button
-              onClick={() => { setWeightDraft(String(entry.weight)); setEditingWeight(true); }}
+              onClick={() => { setWeightDraft(entry.weight > 0 ? String(entry.weight) : ""); setEditingWeight(true); }}
               className="text-base font-semibold mono text-navy-900 hover:bg-navy-50 px-2 py-1 rounded-lg transition"
             >
               {entry.weight}
@@ -1558,6 +1575,7 @@ function EditableEntry({ entry, onWeightChange, onRepsChange, onNoteChange, onAd
                 inputMode="numeric"
                 value={reps || ""}
                 onChange={e => onRepsChange(i, e.target.value)}
+                onFocus={focusToEnd}
                 placeholder="0"
                 className="w-16 surface-2 border border-soft rounded-md px-2 py-1.5 text-sm font-semibold mono text-center text-navy-900 focus:outline-none focus:border-strong"
               />
@@ -2196,14 +2214,14 @@ function ProfileEditView({ profile, onSave, onCancel }) {
         <Field label="Height">
           {draft.units === "imperial" ? (
             <div className="flex items-center gap-2">
-              <input type="number" inputMode="numeric" value={heightFeet} onChange={e => setHeightFeet(e.target.value)} className="w-20 surface border border-soft rounded-xl px-3 py-3 text-center text-base mono focus:outline-none focus:border-strong text-navy-900" />
+              <input type="number" inputMode="numeric" value={heightFeet} onChange={e => setHeightFeet(e.target.value)} onFocus={focusToEnd} className="w-20 surface border border-soft rounded-xl px-3 py-3 text-center text-base mono focus:outline-none focus:border-strong text-navy-900" />
               <span className="text-sm text-navy-500">ft</span>
-              <input type="number" inputMode="numeric" value={heightInches} onChange={e => setHeightInches(e.target.value)} className="w-20 surface border border-soft rounded-xl px-3 py-3 text-center text-base mono focus:outline-none focus:border-strong text-navy-900" />
+              <input type="number" inputMode="numeric" value={heightInches} onChange={e => setHeightInches(e.target.value)} onFocus={focusToEnd} className="w-20 surface border border-soft rounded-xl px-3 py-3 text-center text-base mono focus:outline-none focus:border-strong text-navy-900" />
               <span className="text-sm text-navy-500">in</span>
             </div>
           ) : (
             <div className="flex items-center gap-2">
-              <input type="number" inputMode="numeric" value={draft.heightCm || ""} onChange={e => update({ heightCm: parseInt(e.target.value) || null })} className="w-24 surface border border-soft rounded-xl px-3 py-3 text-center text-base mono focus:outline-none focus:border-strong text-navy-900" />
+              <input type="number" inputMode="numeric" value={draft.heightCm || ""} onChange={e => update({ heightCm: parseInt(e.target.value) || null })} onFocus={focusToEnd} className="w-24 surface border border-soft rounded-xl px-3 py-3 text-center text-base mono focus:outline-none focus:border-strong text-navy-900" />
               <span className="text-sm text-navy-500">cm</span>
             </div>
           )}
@@ -2212,12 +2230,12 @@ function ProfileEditView({ profile, onSave, onCancel }) {
         <Field label="Weight">
           {draft.units === "imperial" ? (
             <div className="flex items-center gap-2">
-              <input type="number" inputMode="decimal" value={weightLb} onChange={e => setWeightLb(e.target.value)} className="w-24 surface border border-soft rounded-xl px-3 py-3 text-center text-base mono focus:outline-none focus:border-strong text-navy-900" />
+              <input type="number" inputMode="decimal" value={weightLb} onChange={e => setWeightLb(e.target.value)} onFocus={focusToEnd} className="w-24 surface border border-soft rounded-xl px-3 py-3 text-center text-base mono focus:outline-none focus:border-strong text-navy-900" />
               <span className="text-sm text-navy-500">lb</span>
             </div>
           ) : (
             <div className="flex items-center gap-2">
-              <input type="number" inputMode="decimal" step="0.1" value={draft.weightKg || ""} onChange={e => update({ weightKg: parseFloat(e.target.value) || null })} className="w-24 surface border border-soft rounded-xl px-3 py-3 text-center text-base mono focus:outline-none focus:border-strong text-navy-900" />
+              <input type="number" inputMode="decimal" step="0.1" value={draft.weightKg || ""} onChange={e => update({ weightKg: parseFloat(e.target.value) || null })} onFocus={focusToEnd} className="w-24 surface border border-soft rounded-xl px-3 py-3 text-center text-base mono focus:outline-none focus:border-strong text-navy-900" />
               <span className="text-sm text-navy-500">kg</span>
             </div>
           )}
@@ -2647,7 +2665,8 @@ function ActiveExercise({ ex, onUpdate, onRemove }) {
   }, [editingWeight]);
 
   const beginWeightEdit = () => {
-    setWeightDraft(String(ex.weight));
+    // Display empty when weight is 0 so the user can type without a leading 0.
+    setWeightDraft(ex.weight > 0 ? String(ex.weight) : "");
     setEditingWeight(true);
   };
 
@@ -2726,6 +2745,7 @@ function ActiveExercise({ ex, onUpdate, onRemove }) {
                   value={weightDraft}
                   onChange={e => setWeightDraft(e.target.value)}
                   onBlur={commitWeightEdit}
+                  onFocus={focusToEnd}
                   onKeyDown={e => {
                     if (e.key === "Enter") { e.target.blur(); }
                     else if (e.key === "Escape") { cancelWeightEdit(); }
@@ -2836,7 +2856,7 @@ function SetRow({ setNum, reps, lastReps, targetMax, onChange, onRemove }) {
         <button onClick={() => onChange(reps - 1)} className="w-9 h-9 rounded-lg flex items-center justify-center transition active:scale-95" style={{ background: "var(--navy-100)", color: "var(--navy-700)" }}>
           <Minus size={14} />
         </button>
-        <input type="number" inputMode="numeric" value={reps || ""} onChange={(e) => onChange(parseInt(e.target.value) || 0)} placeholder={lastReps ? String(lastReps) : "0"} className="w-14 h-9 surface border border-soft rounded-lg text-center text-base font-semibold mono focus:outline-none focus:border-strong text-navy-900" />
+        <input type="number" inputMode="numeric" value={reps || ""} onChange={(e) => onChange(parseInt(e.target.value) || 0)} onFocus={focusToEnd} placeholder={lastReps ? String(lastReps) : "0"} className="w-14 h-9 surface border border-soft rounded-lg text-center text-base font-semibold mono focus:outline-none focus:border-strong text-navy-900" />
         <button onClick={() => onChange(reps + 1)} className="w-9 h-9 rounded-lg flex items-center justify-center transition active:scale-95" style={{ background: "var(--navy-100)", color: "var(--navy-700)" }}>
           <Plus size={14} />
         </button>

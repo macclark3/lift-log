@@ -1,5 +1,6 @@
 import React, { useState } from "react";
 import { AuthLayout } from "./AuthLayout";
+import { focusToEnd } from "../lib/inputs";
 
 const GENDER_OPTIONS = ["Male", "Female", "Non-binary", "Prefer not to say"];
 const EXPERIENCE_OPTIONS = ["Beginner", "Intermediate", "Advanced"];
@@ -84,14 +85,14 @@ export function OnboardingScreen({ onComplete }) {
         <Field label="Height">
           {units === "imperial" ? (
             <div className="flex items-center gap-2">
-              <input type="number" inputMode="numeric" value={heightFeet} onChange={e => setHeightFeet(e.target.value)} className="w-20 surface-2 border border-soft rounded-xl px-3 py-3 text-center text-base mono focus:outline-none focus:border-strong text-navy-900" />
+              <input type="number" inputMode="numeric" value={heightFeet} onChange={e => setHeightFeet(e.target.value)} onFocus={focusToEnd} className="w-20 surface-2 border border-soft rounded-xl px-3 py-3 text-center text-base mono focus:outline-none focus:border-strong text-navy-900" />
               <span className="text-sm text-navy-500">ft</span>
-              <input type="number" inputMode="numeric" value={heightInches} onChange={e => setHeightInches(e.target.value)} className="w-20 surface-2 border border-soft rounded-xl px-3 py-3 text-center text-base mono focus:outline-none focus:border-strong text-navy-900" />
+              <input type="number" inputMode="numeric" value={heightInches} onChange={e => setHeightInches(e.target.value)} onFocus={focusToEnd} className="w-20 surface-2 border border-soft rounded-xl px-3 py-3 text-center text-base mono focus:outline-none focus:border-strong text-navy-900" />
               <span className="text-sm text-navy-500">in</span>
             </div>
           ) : (
             <div className="flex items-center gap-2">
-              <input type="number" inputMode="numeric" value={heightCm} onChange={e => setHeightCm(e.target.value)} className="w-24 surface-2 border border-soft rounded-xl px-3 py-3 text-center text-base mono focus:outline-none focus:border-strong text-navy-900" />
+              <input type="number" inputMode="numeric" value={heightCm} onChange={e => setHeightCm(e.target.value)} onFocus={focusToEnd} className="w-24 surface-2 border border-soft rounded-xl px-3 py-3 text-center text-base mono focus:outline-none focus:border-strong text-navy-900" />
               <span className="text-sm text-navy-500">cm</span>
             </div>
           )}
@@ -100,12 +101,12 @@ export function OnboardingScreen({ onComplete }) {
         <Field label="Weight">
           {units === "imperial" ? (
             <div className="flex items-center gap-2">
-              <input type="number" inputMode="decimal" value={weightLb} onChange={e => setWeightLb(e.target.value)} className="w-24 surface-2 border border-soft rounded-xl px-3 py-3 text-center text-base mono focus:outline-none focus:border-strong text-navy-900" />
+              <input type="number" inputMode="decimal" value={weightLb} onChange={e => setWeightLb(e.target.value)} onFocus={focusToEnd} className="w-24 surface-2 border border-soft rounded-xl px-3 py-3 text-center text-base mono focus:outline-none focus:border-strong text-navy-900" />
               <span className="text-sm text-navy-500">lb</span>
             </div>
           ) : (
             <div className="flex items-center gap-2">
-              <input type="number" inputMode="decimal" step="0.1" value={weightKg} onChange={e => setWeightKg(e.target.value)} className="w-24 surface-2 border border-soft rounded-xl px-3 py-3 text-center text-base mono focus:outline-none focus:border-strong text-navy-900" />
+              <input type="number" inputMode="decimal" step="0.1" value={weightKg} onChange={e => setWeightKg(e.target.value)} onFocus={focusToEnd} className="w-24 surface-2 border border-soft rounded-xl px-3 py-3 text-center text-base mono focus:outline-none focus:border-strong text-navy-900" />
               <span className="text-sm text-navy-500">kg</span>
             </div>
           )}
