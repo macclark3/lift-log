@@ -4,31 +4,25 @@ import { AuthLayout } from "./AuthLayout";
 const GENDER_OPTIONS = ["Male", "Female", "Non-binary", "Prefer not to say"];
 const EXPERIENCE_OPTIONS = ["Beginner", "Intermediate", "Advanced"];
 
-// Shown once after signup (or on first auth for users who pre-date this
-// feature) so we can capture optional profile context. None of the fields
-// are required to proceed — Skip and Continue both flip profile.onboarded
-// to true so the screen never appears again. Existing localStorage values
-// pre-fill the form so a returning user doesn't have to re-enter anything.
-export function OnboardingScreen({ profile, onComplete }) {
-  const [name, setName] = useState(profile.name || "");
-  const [units, setUnits] = useState(profile.units || "imperial");
-  const [gender, setGender] = useState(profile.gender || null);
-  const [homeGym, setHomeGym] = useState(profile.homeGym || "");
-  const [experienceLevel, setExperienceLevel] = useState(profile.experienceLevel || null);
-
-  // Height & weight: store imperial input strings AND a metric fallback so
-  // switching units doesn't lose user input mid-flow.
-  const [heightFeet, setHeightFeet] = useState(() =>
-    profile.heightCm ? String(Math.floor(profile.heightCm / 2.54 / 12)) : ""
-  );
-  const [heightInches, setHeightInches] = useState(() =>
-    profile.heightCm ? String(Math.round((profile.heightCm / 2.54) % 12)) : ""
-  );
-  const [heightCm, setHeightCm] = useState(() => profile.heightCm || "");
-  const [weightLb, setWeightLb] = useState(() =>
-    profile.weightKg ? String(Math.round(profile.weightKg * 2.205)) : ""
-  );
-  const [weightKg, setWeightKg] = useState(() => profile.weightKg || "");
+// Shown once for fresh accounts to capture optional profile context. None
+// of the fields are required to proceed — Skip and Continue both flip
+// profile.onboarded to true so the screen never appears again. The form
+// starts blank by design: this is a brand-new-account flow, and the
+// caller has already wiped per-user localStorage to a clean state. Only
+// Continue writes the entered values to profile; Skip leaves profile
+// untouched.
+export function OnboardingScreen({ onComplete }) {
+  const [name, setName] = useState("");
+  // Imperial is the default visual selection; the user can flip it.
+  const [units, setUnits] = useState("imperial");
+  const [gender, setGender] = useState(null);
+  const [homeGym, setHomeGym] = useState("");
+  const [experienceLevel, setExperienceLevel] = useState(null);
+  const [heightFeet, setHeightFeet] = useState("");
+  const [heightInches, setHeightInches] = useState("");
+  const [heightCm, setHeightCm] = useState("");
+  const [weightLb, setWeightLb] = useState("");
+  const [weightKg, setWeightKg] = useState("");
 
   const computedHeightCm = () => {
     if (units === "imperial") {
@@ -52,12 +46,12 @@ export function OnboardingScreen({ profile, onComplete }) {
 
   const handleContinue = () => {
     onComplete({
-      name: name.trim() || profile.name,
+      name: name.trim(),
       units,
       heightCm: computedHeightCm(),
       weightKg: computedWeightKg(),
       gender,
-      homeGym: homeGym.trim() || profile.homeGym,
+      homeGym: homeGym.trim(),
       experienceLevel,
     });
   };

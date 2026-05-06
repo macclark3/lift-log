@@ -263,9 +263,49 @@ export default function App() {
   //   1. loading: don't flash the login form before we know the user state
   //   2. password recovery: takes priority even over an active session
   //   3. signed out: show login/signup/forgot
-  //   4. signed in but not onboarded: show the welcome form
-  //   5. signed in + onboarded: the existing app
+  //   4. signed in but not initialized for this device: wipe + briefly show the
+  //      loading state so we never render anyone else's data to a new user
+  //   5. signed in but not onboarded: show the welcome form
+  //   6. signed in + onboarded: the existing app
   const { session, loading: authLoading, isPasswordRecovery } = useSessionState();
+
+  // Synchronous read so already-initialized users never see a flash.
+  // localStorage is shared across all users on this device; this flag
+  // ensures we wipe & reset to a clean state the first time each userId
+  // appears here, then never again for that user.
+  const userInitKey = session ? `liftlog:initialized:${session.user.id}` : null;
+  const userInitialized = userInitKey ? !!localStorage.getItem(userInitKey) : null;
+
+  // First time we see this user on this device: wipe per-user localStorage
+  // back to a clean state before they (or anyone else) sees the main app.
+  // Triggers a re-render via the setters; the synchronous flag check above
+  // will then return true.
+  useEffect(() => {
+    if (!session || userInitialized) return;
+    setHistory([]);
+    setSessions([]);
+    setPlans(seedPlans);
+    setExercises(seedExercises);
+    setActiveWorkout(null);
+    setProfile({
+      id: session.user.id,
+      email: session.user.email || "",
+      name: "",
+      photo: null,
+      dateOfBirth: null,
+      heightCm: null,
+      weightKg: null,
+      gender: null,
+      goal: null,
+      homeGym: "",
+      units: "imperial",
+      memberSince: new Date().toISOString().split("T")[0],
+      experienceLevel: null,
+      onboarded: false,
+    });
+    localStorage.setItem(userInitKey, "1");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [session, userInitialized]);
 
   const finishOnboarding = (patch) => {
     setProfile({ ...profile, ...patch, onboarded: true });
@@ -275,8 +315,9 @@ export default function App() {
   if (authLoading) authShell = <AuthLoading />;
   else if (isPasswordRecovery) authShell = <SetNewPasswordScreen />;
   else if (!session) authShell = <AuthGate />;
+  else if (!userInitialized) authShell = <AuthLoading />;
   else if (!profile.onboarded) {
-    authShell = <OnboardingScreen profile={profile} onComplete={finishOnboarding} />;
+    authShell = <OnboardingScreen onComplete={finishOnboarding} />;
   }
 
   return (
