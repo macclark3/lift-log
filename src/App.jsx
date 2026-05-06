@@ -2877,11 +2877,6 @@ function ProfileView({ profile, sessions, history, onEdit }) {
         <LogOut size={14} /> Sign out
       </button>
 
-      {/* Footer note */}
-      <div className="mt-6 text-[11px] text-navy-400 text-center leading-relaxed px-4">
-        Multi-user support coming in a future update.
-      </div>
-
       {/* CSV fallback modal — shown when direct download isn't available (sandboxed previews) */}
       {csvFallback && (
         <div className="fixed inset-0 z-30 backdrop-blur-sm flex items-end" style={{ background: "rgba(10, 31, 61, 0.45)" }} onClick={() => setCsvFallback(null)}>
