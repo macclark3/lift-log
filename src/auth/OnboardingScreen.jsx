@@ -19,6 +19,7 @@ export function OnboardingScreen({ onComplete }) {
   const [gender, setGender] = useState(null);
   const [homeGym, setHomeGym] = useState("");
   const [experienceLevel, setExperienceLevel] = useState(null);
+  const [weeklyWorkoutGoal, setWeeklyWorkoutGoal] = useState(null);
   const [heightFeet, setHeightFeet] = useState("");
   const [heightInches, setHeightInches] = useState("");
   const [heightCm, setHeightCm] = useState("");
@@ -54,6 +55,7 @@ export function OnboardingScreen({ onComplete }) {
       gender,
       homeGym: homeGym.trim(),
       experienceLevel,
+      weeklyWorkoutGoal,
     });
   };
 
@@ -133,6 +135,15 @@ export function OnboardingScreen({ onComplete }) {
           <div className="flex flex-wrap gap-1.5">
             {EXPERIENCE_OPTIONS.map(e => (
               <Chip key={e} active={experienceLevel === e} onClick={() => setExperienceLevel(e)}>{e}</Chip>
+            ))}
+          </div>
+        </Field>
+
+        <Field label="Weekly workout target">
+          <div className="flex flex-wrap gap-1.5">
+            <Chip active={weeklyWorkoutGoal == null} onClick={() => setWeeklyWorkoutGoal(null)}>No goal</Chip>
+            {[2, 3, 4, 5, 6, 7].map(n => (
+              <Chip key={n} active={weeklyWorkoutGoal === n} onClick={() => setWeeklyWorkoutGoal(n)}>{n}</Chip>
             ))}
           </div>
         </Field>

@@ -3,7 +3,7 @@ import {
   TrendingUp, Plus, Check, ChevronRight, Dumbbell, Clock, Flame, ArrowUp, Minus,
   Play, X, Edit3, History, ListChecks, Heart, Home, Trash2, ChevronLeft, GripVertical,
   Activity, Footprints, Trophy, Scale, Search, Library, Sparkles,
-  User, Mail, Calendar, Ruler, Target, Download, Camera, LogOut, Settings,
+  User, Mail, Calendar, CalendarCheck, Ruler, Target, Download, Camera, LogOut, Settings,
   Smartphone, ChevronDown, ChevronUp
 } from "lucide-react";
 import { useLocalStorage } from "./hooks/useLocalStorage";
@@ -192,6 +192,7 @@ function syncProfileToSupabase(userId, fields) {
       home_gym: fields.homeGym || null,
       experience_level: fields.experienceLevel ?? null,
       units: fields.units ?? null,
+      weekly_workout_goal: fields.weeklyWorkoutGoal ?? null,
     })
     .eq("id", userId)
     .then(({ error }) => {
@@ -418,6 +419,7 @@ export default function App() {
       units: "imperial",
       memberSince: new Date().toISOString().split("T")[0],
       experienceLevel: null,
+      weeklyWorkoutGoal: null,
     });
     localStorage.setItem(userInitKey, "1");
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -2237,6 +2239,7 @@ function ProfileView({ profile, sessions, history, onEdit }) {
           <DetailRow icon={User} label="Gender" value={profile.gender || "—"} />
           <DetailRow icon={Dumbbell} label="Home gym" value={profile.homeGym?.trim() || "—"} />
           <DetailRow icon={Target} label="Goal" value={profile.goal || "—"} />
+          <DetailRow icon={CalendarCheck} label="Weekly target" value={profile.weeklyWorkoutGoal != null ? `${profile.weeklyWorkoutGoal} workouts per week` : "—"} />
           <DetailRow icon={Ruler} label="Units" value={profile.units === "imperial" ? "Imperial (lb, ft)" : "Metric (kg, cm)"} />
         </div>
       </div>
@@ -2499,6 +2502,15 @@ function ProfileEditView({ profile, onSave, onCancel }) {
           <div className="flex flex-wrap gap-1.5">
             {["Strength", "Hypertrophy", "Endurance", "Weight loss", "General fitness"].map(g => (
               <FilterChip key={g} active={draft.goal === g} onClick={() => update({ goal: g })}>{g}</FilterChip>
+            ))}
+          </div>
+        </Field>
+
+        <Field label="Weekly workout target" hint="How many workouts per week you're aiming for. Used to track consistency on Home.">
+          <div className="flex flex-wrap gap-1.5">
+            <FilterChip active={draft.weeklyWorkoutGoal == null} onClick={() => update({ weeklyWorkoutGoal: null })}>No goal</FilterChip>
+            {[2, 3, 4, 5, 6, 7].map(n => (
+              <FilterChip key={n} active={draft.weeklyWorkoutGoal === n} onClick={() => update({ weeklyWorkoutGoal: n })}>{n}</FilterChip>
             ))}
           </div>
         </Field>
