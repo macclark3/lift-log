@@ -29,29 +29,6 @@ const seedExercises = [
   { id: "ex-face", name: "Face Pulls", targetReps: [12, 15], unit: "lb", muscle: "Shoulders", equipment: "Cable", bumpRule: "majority", increment: 5 },
 ];
 
-const seedHistory = [
-  { id: 1, date: "2026-04-28T18:30:00", exercise: "Bench Press", weight: 165, reps: [8, 6, 4], targetReps: [8, 12], unit: "lb", workoutId: "w1" },
-  { id: 2, date: "2026-04-28T18:45:00", exercise: "Incline Dumbell Press", weight: 35, reps: [18, 14, 12], targetReps: [10, 15], unit: "lb", note: "3 from flat", workoutId: "w1" },
-  { id: 3, date: "2026-04-28T19:00:00", exercise: "Cable Tricep Extension", weight: 45, reps: [11, 10, 11], targetReps: [10, 12], unit: "lb", workoutId: "w1" },
-  { id: 4, date: "2026-04-26T17:15:00", exercise: "Cable Rows", weight: 120, reps: [18, 14, 13], targetReps: [10, 15], unit: "lb", workoutId: "w2" },
-  { id: 5, date: "2026-04-26T17:30:00", exercise: "Dumbbell Curls", weight: 30, reps: [40, 30, 26], targetReps: [12, 15], unit: "lb", workoutId: "w2" },
-  { id: 6, date: "2026-04-26T17:45:00", exercise: "Lat Pulldowns", weight: 120, reps: [12, 11, 10], targetReps: [8, 12], unit: "lb", workoutId: "w2" },
-  { id: 7, date: "2026-04-26T18:00:00", exercise: "Hammer Curls", weight: 30, reps: [30, 20], targetReps: [12, 15], unit: "lb", workoutId: "w2" },
-  { id: 8, date: "2026-04-24T19:00:00", exercise: "Seated Dumbell Press", weight: 35, reps: [16, 13, 11], targetReps: [8, 12], unit: "lb", workoutId: "w3" },
-  { id: 9, date: "2026-04-24T19:15:00", exercise: "Lateral Raises", weight: 17.5, reps: [18, 15, 16], targetReps: [12, 15], unit: "lb", workoutId: "w3" },
-  { id: 10, date: "2026-04-24T19:30:00", exercise: "Face Pulls", weight: 105, reps: [16, 15], targetReps: [12, 15], unit: "lb", workoutId: "w3" },
-  { id: 11, date: "2026-04-22T18:00:00", exercise: "Bench Press", weight: 160, reps: [10, 8, 7], targetReps: [8, 12], unit: "lb", workoutId: "w4" },
-  { id: 12, date: "2026-04-19T17:00:00", exercise: "Bench Press", weight: 160, reps: [9, 7, 6], targetReps: [8, 12], unit: "lb", workoutId: "w5" },
-];
-
-const seedSessions = [
-  { id: "w1", startedAt: "2026-04-28T18:30:00", endedAt: "2026-04-28T19:25:00", name: "Push Day" },
-  { id: "w2", startedAt: "2026-04-26T17:15:00", endedAt: "2026-04-26T18:20:00", name: "Pull Day" },
-  { id: "w3", startedAt: "2026-04-24T19:00:00", endedAt: "2026-04-24T19:55:00", name: "Shoulders" },
-  { id: "w4", startedAt: "2026-04-22T18:00:00", endedAt: "2026-04-22T19:00:00", name: "Push Day" },
-  { id: "w5", startedAt: "2026-04-19T17:00:00", endedAt: "2026-04-19T18:05:00", name: "Push Day" },
-];
-
 const seedPlans = [
   { id: "p1", name: "Push Day A", description: "Chest, shoulders, triceps", exercises: ["Bench Press", "Incline Dumbell Press", "Lateral Raises", "Cable Tricep Extension"] },
   { id: "p2", name: "Pull Day A", description: "Back & biceps", exercises: ["Cable Rows", "Lat Pulldowns", "Dumbbell Curls", "Hammer Curls", "Face Pulls"] },
@@ -282,6 +259,49 @@ function planToDbPatch(patch) {
   return out;
 }
 
+// Sessions and history follow the same translation pattern. History entries
+// reference their parent session via workoutId in app state and session_id
+// in the DB; the foreign key has ON DELETE CASCADE so deleting a session
+// removes its history rows automatically.
+
+function mapRowToSession(row) {
+  return {
+    id: row.id,
+    name: row.name || "Workout",
+    startedAt: row.started_at,
+    endedAt: row.ended_at || row.started_at,
+  };
+}
+
+function mapRowToHistoryEntry(row) {
+  return {
+    id: row.id,
+    workoutId: row.session_id,
+    exercise: row.exercise_name,
+    weight: row.weight ?? 0,
+    reps: row.reps || [],
+    targetReps: [row.target_reps_min ?? 0, row.target_reps_max ?? 0],
+    unit: row.unit || "lb",
+    note: row.note || undefined,
+    date: row.logged_at,
+  };
+}
+
+function historyEntryToDbRow(entry, userId, sessionId) {
+  return {
+    user_id: userId,
+    session_id: sessionId,
+    exercise_name: entry.exercise,
+    weight: entry.weight ?? 0,
+    reps: entry.reps || [],
+    target_reps_min: entry.targetReps?.[0] ?? null,
+    target_reps_max: entry.targetReps?.[1] ?? null,
+    unit: entry.unit || "lb",
+    note: entry.note || null,
+    logged_at: entry.date || new Date().toISOString(),
+  };
+}
+
 // Inverse mapping: turn a camelCase patch into the snake_case payload for an
 // UPDATE. Only writable fields are forwarded (id and email are managed by
 // Supabase auth + trigger; memberSince is set at signup and never edited).
@@ -304,12 +324,14 @@ function profileToDbPatch(patch) {
 
 // --- ROOT ---
 export default function App() {
-  const [history, setHistory] = useLocalStorage("history", seedHistory);
-  const [sessions, setSessions] = useLocalStorage("sessions", seedSessions);
-  // Library data is Supabase-backed as of migration 2: exercises and plans
-  // are read in the initial fetch and written through the async helpers
-  // below. localStorage keys (liftlog:exercises, liftlog:plans) are no
-  // longer read or written; old values, if any, are orphaned.
+  // All persisted data except activeWorkout is now Supabase-backed (the
+  // migrations in order: profile → exercises/plans → sessions/history).
+  // Old localStorage keys liftlog:profile/exercises/plans/sessions/history
+  // are no longer read or written; orphaned values, if any, just sit
+  // there. activeWorkout (below) intentionally stays in localStorage —
+  // mid-workout writes shouldn't depend on the network.
+  const [history, setHistory] = useState([]);
+  const [sessions, setSessions] = useState([]);
   const [exercises, setExercises] = useState([]);
   const [plans, setPlans] = useState([]);
   // Profile is also Supabase-backed (migration 1).
@@ -450,46 +472,187 @@ export default function App() {
     setActiveWorkout({ ...activeWorkout, minimized: false });
   };
 
-  const finishWorkout = (workoutName) => {
-    if (!activeWorkout || activeWorkout.exercises.length === 0) {
-      setActiveWorkout(null); resetView(); return;
-    }
+  // Convert the in-flight activeWorkout into a persisted session + history
+  // rows. Done in two server round-trips: insert the session first so we
+  // have its real id, then bulk-insert history rows referencing that id.
+  // If history insert fails after the session was created we delete the
+  // orphan session so the user doesn't end up with an empty workout in
+  // their Past tab — they can retry cleanly.
+  // Returns true on success (caller closes the finish modal); false on
+  // failure (activeWorkout is preserved so the user can retry).
+  const finishWorkout = async (workoutName) => {
+    if (!activeWorkout) return false;
     const completed = activeWorkout.exercises.filter(ex => ex.reps.some(r => r > 0));
-    const newEntries = completed.map((ex, i) => ({
-      id: Date.now() + i,
-      date: new Date(new Date(activeWorkout.startedAt).getTime() + i * 60000).toISOString(),
-      exercise: ex.exercise,
-      weight: ex.weight,
+    if (completed.length === 0 || !session) {
+      // Empty workout — nothing to persist, just discard.
+      setActiveWorkout(null); resetView(); setTab("home");
+      return true;
+    }
+
+    setLibrarySaveError(null);
+    const userId = session.user.id;
+    const startedAt = activeWorkout.startedAt;
+    const endedAt = new Date().toISOString();
+
+    // 1) Insert the session.
+    const { data: sessionRow, error: sessionErr } = await supabase
+      .from("sessions")
+      .insert([{
+        user_id: userId,
+        name: (workoutName && workoutName.trim()) || "Workout",
+        started_at: startedAt,
+        ended_at: endedAt,
+      }])
+      .select()
+      .single();
+
+    if (sessionErr || !sessionRow) {
+      setLibrarySaveError(sessionErr?.message || "Couldn't save the workout. Check your connection and try again.");
+      return false;
+    }
+
+    // 2) Insert history rows referencing the new session id. Spread each
+    // entry's logged_at by a minute so they sort in the order they were
+    // logged (matches the original local-only behavior).
+    const baseTime = new Date(startedAt).getTime();
+    const historyRows = completed.map((ex, i) => ({
+      user_id: userId,
+      session_id: sessionRow.id,
+      exercise_name: ex.exercise,
+      weight: ex.weight ?? 0,
       reps: ex.reps.filter(r => r > 0),
-      targetReps: ex.targetReps,
-      unit: ex.unit,
-      note: ex.note || undefined,
-      workoutId: activeWorkout.id,
+      target_reps_min: ex.targetReps?.[0] ?? null,
+      target_reps_max: ex.targetReps?.[1] ?? null,
+      unit: ex.unit || "lb",
+      note: ex.note || null,
+      logged_at: new Date(baseTime + i * 60000).toISOString(),
     }));
-    setHistory([...newEntries, ...history]);
-    setSessions([{ id: activeWorkout.id, startedAt: activeWorkout.startedAt, endedAt: new Date().toISOString(), name: workoutName || "Workout" }, ...sessions]);
-    setActiveWorkout(null); resetView(); setTab("home");
+
+    const { data: insertedHistory, error: historyErr } = await supabase
+      .from("history")
+      .insert(historyRows)
+      .select();
+
+    if (historyErr || !insertedHistory) {
+      // Roll back the orphan session so the Past tab doesn't show an empty
+      // workout. We don't surface the cleanup result to the user — even if
+      // delete fails, the retry will just create another session.
+      await supabase.from("sessions").delete().eq("id", sessionRow.id);
+      setLibrarySaveError(historyErr?.message || "Couldn't save your sets. Check your connection and try again.");
+      return false;
+    }
+
+    // 3) Persist locally and clear the in-flight workout.
+    setSessions(prev => [mapRowToSession(sessionRow), ...prev]);
+    setHistory(prev => [...insertedHistory.map(mapRowToHistoryEntry), ...prev]);
+    setActiveWorkout(null);
+    resetView();
+    setTab("home");
+    return true;
   };
 
   const cancelWorkout = () => { setActiveWorkout(null); resetView(); setTab("home"); };
 
-  const updateSession = (sessionId, sessionPatch, updatedEntries) => {
-    // sessionPatch: partial fields to update on the session (e.g. name)
-    // updatedEntries: full replacement array of history entries for this session
-    setSessions(sessions.map(s => s.id === sessionId ? { ...s, ...sessionPatch } : s));
+  // Edit a past session: rename and/or replace its history entries. The
+  // entries replace is a delete-then-insert against Supabase (simpler than
+  // diffing). Local state is optimistically updated and rolled back on
+  // failure. Returns true on success.
+  //
+  // Partial-failure note: if the delete succeeds but the re-insert fails,
+  // the session ends up with no history rows in Supabase. The user retries
+  // (delete becomes a no-op, insert succeeds). Local state mirrors the
+  // intended-after-save state during the retry window.
+  const updateSession = async (sessionId, sessionPatch, updatedEntries) => {
+    if (!session) return false;
+    setLibrarySaveError(null);
+    const previousSessions = sessions;
+    const previousHistory = history;
+
+    // Optimistic update.
+    setSessions(prev => prev.map(s => s.id === sessionId ? { ...s, ...sessionPatch } : s));
     if (updatedEntries) {
-      // Replace all entries for this session with the updated set
-      setHistory([
-        ...history.filter(h => h.workoutId !== sessionId),
+      setHistory(prev => [
+        ...prev.filter(h => h.workoutId !== sessionId),
         ...updatedEntries,
       ]);
     }
+
+    // 1) Update the session row.
+    const dbSessionPatch = {};
+    if ("name" in sessionPatch) dbSessionPatch.name = sessionPatch.name;
+    if ("startedAt" in sessionPatch) dbSessionPatch.started_at = sessionPatch.startedAt;
+    if ("endedAt" in sessionPatch) dbSessionPatch.ended_at = sessionPatch.endedAt;
+
+    if (Object.keys(dbSessionPatch).length > 0) {
+      const { error: sessionErr } = await supabase
+        .from("sessions")
+        .update(dbSessionPatch)
+        .eq("id", sessionId);
+      if (sessionErr) {
+        setSessions(previousSessions);
+        setHistory(previousHistory);
+        setLibrarySaveError(sessionErr.message || "Couldn't save changes. Check your connection and try again.");
+        return false;
+      }
+    }
+
+    if (updatedEntries) {
+      // 2) Wipe existing history rows for this session.
+      const { error: deleteErr } = await supabase
+        .from("history")
+        .delete()
+        .eq("session_id", sessionId);
+      if (deleteErr) {
+        setSessions(previousSessions);
+        setHistory(previousHistory);
+        setLibrarySaveError(deleteErr.message || "Couldn't save changes. Check your connection and try again.");
+        return false;
+      }
+
+      // 3) Insert the new entries (if any). Empty array = the user removed
+      // every entry; we just leave the session with no rows.
+      if (updatedEntries.length > 0) {
+        const newRows = updatedEntries.map(e => historyEntryToDbRow(e, session.user.id, sessionId));
+        const { data: insertedRows, error: insertErr } = await supabase
+          .from("history")
+          .insert(newRows)
+          .select();
+        if (insertErr) {
+          setSessions(previousSessions);
+          setHistory(previousHistory);
+          setLibrarySaveError(insertErr.message || "Couldn't save changes. Check your connection and try again.");
+          return false;
+        }
+        // Replace local entries with the inserted rows so the in-memory
+        // ids match Supabase's.
+        setHistory(prev => [
+          ...prev.filter(h => h.workoutId !== sessionId),
+          ...insertedRows.map(mapRowToHistoryEntry),
+        ]);
+      }
+    }
+    return true;
   };
 
-  const deleteSession = (sessionId) => {
-    setSessions(sessions.filter(s => s.id !== sessionId));
-    setHistory(history.filter(h => h.workoutId !== sessionId));
-    popView();
+  // Delete a past session. The history.session_id foreign key has
+  // ON DELETE CASCADE, so the matching history rows go with it.
+  const deleteSession = async (sessionId) => {
+    if (!session) return false;
+    setLibrarySaveError(null);
+    const previousSessions = sessions;
+    const previousHistory = history;
+
+    setSessions(prev => prev.filter(s => s.id !== sessionId));
+    setHistory(prev => prev.filter(h => h.workoutId !== sessionId));
+
+    const { error } = await supabase.from("sessions").delete().eq("id", sessionId);
+    if (error) {
+      setSessions(previousSessions);
+      setHistory(previousHistory);
+      setLibrarySaveError(error.message || "Couldn't delete the workout. Check your connection and try again.");
+      return false;
+    }
+    return true;
   };
 
   const savePlan = async (plan) => {
@@ -584,6 +747,8 @@ export default function App() {
       setProfile(null);
       setExercises([]);
       setPlans([]);
+      setSessions([]);
+      setHistory([]);
       setInitialDataLoaded(false);
       setInitialDataError(null);
       setProfileSaveError(null);
@@ -609,11 +774,10 @@ export default function App() {
   // will then return true.
   useEffect(() => {
     if (!session || userInitialized) return;
-    setHistory([]);
-    setSessions([]);
     setActiveWorkout(null);
-    // Profile, exercises, and plans are now Supabase-backed — the fetch
-    // effect below loads (and seeds, for first-time users) all of them.
+    // All persisted data (profile, exercises, plans, sessions, history) is
+    // Supabase-backed — the fetch effect below loads (and seeds, for
+    // first-time users) what's needed.
     localStorage.setItem(userInitKey, "1");
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [session, userInitialized]);
@@ -633,24 +797,31 @@ export default function App() {
     (async () => {
       try {
         const userId = session.user.id;
-        const [profileRes, exRes, plansRes] = await Promise.all([
+        const [profileRes, exRes, plansRes, sessionsRes, historyRes] = await Promise.all([
           supabase.from("profiles").select("*").eq("id", userId).single(),
           supabase.from("exercises").select("*").eq("user_id", userId).order("created_at", { ascending: true }),
           supabase.from("plans").select("*").eq("user_id", userId).order("created_at", { ascending: true }),
+          supabase.from("sessions").select("*").eq("user_id", userId).order("started_at", { ascending: false }),
+          supabase.from("history").select("*").eq("user_id", userId).order("logged_at", { ascending: false }),
         ]);
         if (cancelled) return;
         if (profileRes.error) throw profileRes.error;
         if (exRes.error) throw exRes.error;
         if (plansRes.error) throw plansRes.error;
+        if (sessionsRes.error) throw sessionsRes.error;
+        if (historyRes.error) throw historyRes.error;
 
         const profileObj = mapRowToProfile(profileRes.data, session.user.email);
         let exercisesList = (exRes.data || []).map(mapRowToExercise);
         let plansList = (plansRes.data || []).map(mapRowToPlan);
+        const sessionsList = (sessionsRes.data || []).map(mapRowToSession);
+        const historyList = (historyRes.data || []).map(mapRowToHistoryEntry);
 
         // Empty exercises = first-ever launch for this user; seed the library
         // + plans from the local seed arrays. Plans are seeded only if they
         // are also empty so a user who deliberately deleted all plans doesn't
-        // get them back.
+        // get them back. Sessions and history are not seeded — a fresh user
+        // starts with no workouts.
         if (exercisesList.length === 0) {
           const seededExRows = seedExercises.map(e => exerciseToDbRow(e, userId));
           const exInsert = await supabase.from("exercises").insert(seededExRows).select();
@@ -670,6 +841,8 @@ export default function App() {
         setProfile(profileObj);
         setExercises(exercisesList);
         setPlans(plansList);
+        setSessions(sessionsList);
+        setHistory(historyList);
         setInitialDataLoaded(true);
       } catch (err) {
         if (cancelled) return;
@@ -889,7 +1062,10 @@ export default function App() {
                 exercises={exercises}
                 lastByExercise={lastByExercise}
                 onUpdate={updateSession}
-                onDelete={deleteSession}
+                onDelete={async (id) => {
+                  const ok = await deleteSession(id);
+                  if (ok) popView();
+                }}
                 onCreateExercise={addExerciseToLibrary}
                 librarySaveError={librarySaveError}
               />
@@ -1954,13 +2130,13 @@ function SessionDetailView({ session, entries, exercises, lastByExercise, onUpda
     setShowPicker(false);
   };
 
-  const handleSave = () => {
+  const handleSave = async () => {
     // Filter out any entries that ended up with no reps (e.g. all sets removed)
     const cleaned = draftEntries
       .map(e => ({ ...e, reps: e.reps.filter(r => r > 0) }))
       .filter(e => e.reps.length > 0);
-    onUpdate(session.id, { name: draftName.trim() || "Workout" }, cleaned);
-    setEditing(false);
+    const ok = await onUpdate(session.id, { name: draftName.trim() || "Workout" }, cleaned);
+    if (ok) setEditing(false);
   };
 
   const handleCancelEdit = () => {
@@ -2005,8 +2181,8 @@ function SessionDetailView({ session, entries, exercises, lastByExercise, onUpda
             <Edit3 size={13} /> Edit
           </button>
           <button
-            onClick={() => {
-              if (confirmDelete) onDelete(session.id);
+            onClick={async () => {
+              if (confirmDelete) await onDelete(session.id);
               else setConfirmDelete(true);
             }}
             className="flex-1 py-2.5 rounded-xl text-sm font-medium flex items-center justify-center gap-1.5 transition border"
@@ -2022,6 +2198,15 @@ function SessionDetailView({ session, entries, exercises, lastByExercise, onUpda
       ) : (
         <div className="mt-4 surface-2 border border-soft rounded-xl p-3 text-xs text-navy-600 leading-relaxed">
           You're editing this workout. Changes save when you tap Done.
+        </div>
+      )}
+
+      {librarySaveError && (
+        <div
+          className="mt-3 rounded-xl px-3 py-2.5 text-xs leading-relaxed border"
+          style={{ background: "rgba(220, 38, 38, 0.05)", borderColor: "rgba(220, 38, 38, 0.2)", color: "#dc2626" }}
+        >
+          {librarySaveError}
         </div>
       )}
 
@@ -2112,11 +2297,11 @@ function SessionDetailView({ session, entries, exercises, lastByExercise, onUpda
             Cancel
           </button>
           <button
-            onClick={() => {
+            onClick={async () => {
               if (draftEntries.filter(e => e.reps.some(r => r > 0)).length === 0) {
-                onDelete(session.id);
+                await onDelete(session.id);
               } else {
-                handleSave();
+                await handleSave();
               }
             }}
             className="flex-1 py-3 rounded-xl text-white font-semibold text-sm transition"
@@ -3161,6 +3346,21 @@ function WorkoutView({ workout, setWorkout, exercises, lastByExercise, onCreateE
   const [workoutName, setWorkoutName] = useState("");
   // When non-null, open the full ExerciseEditView as a modal pre-filled with this name.
   const [pendingNewExerciseName, setPendingNewExerciseName] = useState(null);
+  // Locks the finish modal while the persist round-trip is in flight so a
+  // double-tap can't fire two inserts.
+  const [finishing, setFinishing] = useState(false);
+
+  const handleFinishConfirm = async () => {
+    if (finishing) return;
+    setFinishing(true);
+    try {
+      await onFinish(workoutName.trim() || "Workout");
+      // On success the component unmounts (App clears activeWorkout). On
+      // failure librarySaveError surfaces below and the modal stays open.
+    } finally {
+      setFinishing(false);
+    }
+  };
 
   useEffect(() => {
     if (workout.exercises.length === 0 && workout.planQueue.length > 0) {
@@ -3267,13 +3467,26 @@ function WorkoutView({ workout, setWorkout, exercises, lastByExercise, onCreateE
       </button>
 
       {showFinish && (
-        <div className="fixed inset-0 z-30 backdrop-blur-sm flex items-end" style={{ background: "rgba(10, 31, 61, 0.35)" }} onClick={() => setShowFinish(false)}>
+        <div className="fixed inset-0 z-30 backdrop-blur-sm flex items-end" style={{ background: "rgba(10, 31, 61, 0.35)" }} onClick={() => !finishing && setShowFinish(false)}>
           <div className="max-w-md w-full mx-auto surface border-t border-soft rounded-t-3xl p-5 pb-8" onClick={e => e.stopPropagation()}>
             <div className="w-10 h-1 rounded-full mx-auto mb-5" style={{ background: "var(--border-strong)" }} />
             <div className="text-[10px] uppercase tracking-[0.18em] text-navy-500 mono font-medium mb-2">Name this workout</div>
             <input autoFocus value={workoutName} onChange={e => setWorkoutName(e.target.value)} placeholder="e.g. Push Day" className="w-full surface-2 border border-soft rounded-xl px-4 py-3 text-base focus:outline-none focus:border-strong text-navy-900" />
-            <button onClick={() => onFinish(workoutName.trim() || "Workout")} className="mt-4 w-full text-white py-3.5 rounded-xl font-semibold flex items-center justify-center gap-2 transition" style={{ background: "var(--success)" }}>
-              <Check size={18} strokeWidth={2.5} /> Save workout
+            {librarySaveError && (
+              <div
+                className="mt-3 rounded-xl px-3 py-2.5 text-xs leading-relaxed border"
+                style={{ background: "rgba(220, 38, 38, 0.05)", borderColor: "rgba(220, 38, 38, 0.2)", color: "#dc2626" }}
+              >
+                {librarySaveError}
+              </div>
+            )}
+            <button
+              onClick={handleFinishConfirm}
+              disabled={finishing}
+              className="mt-4 w-full text-white py-3.5 rounded-xl font-semibold flex items-center justify-center gap-2 disabled:opacity-60 transition"
+              style={{ background: "var(--success)" }}
+            >
+              <Check size={18} strokeWidth={2.5} /> {finishing ? "Saving…" : "Save workout"}
             </button>
           </div>
         </div>
