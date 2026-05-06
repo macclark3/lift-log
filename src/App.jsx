@@ -4,7 +4,7 @@ import {
   Play, X, Edit3, History, ListChecks, Heart, Home, Trash2, ChevronLeft, GripVertical,
   Activity, Footprints, Trophy, Scale, Search, Library, Sparkles,
   User, Mail, Calendar, Ruler, Target, Download, Camera, LogOut, Settings,
-  Smartphone
+  Smartphone, ChevronDown, ChevronUp
 } from "lucide-react";
 import { useLocalStorage } from "./hooks/useLocalStorage";
 import { useSessionState, signOut } from "./lib/auth";
@@ -259,10 +259,39 @@ export default function App() {
   };
 
   const startWorkout = (planExercises = null) => {
+    // Already have a workout in flight — never start a second. Resume the
+    // existing one instead so we don't lose its state.
+    if (activeWorkout) {
+      setActiveWorkout({ ...activeWorkout, minimized: false });
+      return;
+    }
     const id = `w${Date.now()}`;
-    setActiveWorkout({ id, startedAt: new Date().toISOString(), exercises: [], planQueue: planExercises || [] });
-    // Workout is a top-level mode, not a child of whatever the user was browsing
-    setViewStack([{ type: "workout" }]);
+    setActiveWorkout({
+      id,
+      startedAt: new Date().toISOString(),
+      exercises: [],
+      planQueue: planExercises || [],
+      minimized: false,
+    });
+    // No detail view stacked beneath; the workout view renders independently.
+    setViewStack([]);
+  };
+
+  // Hide the active workout view but keep its state alive so the rest timer
+  // and per-set inputs survive navigation. Reset the view stack so the user
+  // lands on whatever tab they were on.
+  const minimizeWorkout = () => {
+    if (!activeWorkout) return;
+    setActiveWorkout({ ...activeWorkout, minimized: true });
+    setViewStack([]);
+  };
+
+  // Bring the workout view back to the foreground. viewStack is left alone —
+  // any detail navigation underneath is preserved for after the user
+  // re-minimizes (they can pop back to it).
+  const resumeWorkout = () => {
+    if (!activeWorkout) return;
+    setActiveWorkout({ ...activeWorkout, minimized: false });
   };
 
   const finishWorkout = (workoutName) => {
@@ -314,8 +343,13 @@ export default function App() {
   };
   const deletePlan = (id) => { setPlans(plans.filter(p => p.id !== id)); popView(); };
 
-  const renderingWorkout = view?.type === "workout";
-  const renderingDetail = view && !renderingWorkout;
+  // The workout view is foregrounded whenever an active workout exists and
+  // hasn't been minimized. It's mounted (but display:none'd) when minimized
+  // so internal state — the rest timer especially — survives navigation.
+  const showWorkoutView = !!activeWorkout && !activeWorkout.minimized;
+  // Any pushed view counts as a "detail" navigation; the tab content hides
+  // when this is set.
+  const renderingDetail = !!view;
 
   // Auth state drives the top-level view. The order matters:
   //   1. loading: don't flash the login form before we know the user state
@@ -327,20 +361,23 @@ export default function App() {
   //   6. signed in + onboarded: the existing app
   const { session, loading: authLoading, isPasswordRecovery } = useSessionState();
 
-  // Reset to Home whenever the user transitions from signed-out to signed-in
-  // — covers both initial session restore on app load and explicit sign-in
-  // after a sign-out. tab/viewStack aren't persisted, so this only matters
-  // for the in-memory state across an auth round-trip (the bug being that
-  // tab=profile leaked from a previous session into the post-signin landing).
-  // If an active workout is in flight, resume into it instead — that's a
-  // documented mid-session feature we want to preserve.
+  // Reset to Home whenever the user transitions from signed-out to signed-in.
+  // tab/viewStack aren't persisted, so this only matters for the in-memory
+  // state across an auth round-trip. WorkoutView is governed independently
+  // by activeWorkout, so we don't push a "workout" view here — if a workout
+  // is restored alongside the session, it renders foregrounded automatically.
+  // Conversely, when we transition signed-in → signed-out, abandon any
+  // in-flight workout (per spec: a workout is per-session).
   const prevSessionRef = useRef(null);
   useEffect(() => {
     const wasSignedOut = prevSessionRef.current === null;
+    const wasSignedIn = prevSessionRef.current !== null;
     prevSessionRef.current = session;
     if (session && wasSignedOut) {
       setTab("home");
-      setViewStack(activeWorkout ? [{ type: "workout" }] : []);
+      setViewStack([]);
+    } else if (!session && wasSignedIn) {
+      setActiveWorkout(null);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [session]);
@@ -426,6 +463,11 @@ export default function App() {
       fontFamily: "'Inter', -apple-system, BlinkMacSystemFont, system-ui, sans-serif",
       background: "linear-gradient(180deg, #fafbfd 0%, #f1f4f9 100%)",
       color: "#0a1f3d",
+      // Bumps fixed-positioned bars (BottomBar in detail edit views) above the
+      // minimized workout pill. ~56px pill + safe-area inset, give or take.
+      "--bottom-stack-offset": activeWorkout && activeWorkout.minimized
+        ? "calc(60px + env(safe-area-inset-bottom))"
+        : "0px",
     }}>
       <style>{`
         @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600;9..144,700&family=JetBrains+Mono:wght@400;500;600&display=swap');
@@ -498,95 +540,117 @@ export default function App() {
           profile={profile}
           onBack={popView}
           onCancelWorkout={cancelWorkout}
+          onMinimizeWorkout={minimizeWorkout}
           onOpenProfile={() => pushView({ type: "profile" })}
         />
 
-        {!renderingDetail && !renderingWorkout && (
+        {/* Active workout — kept mounted whenever activeWorkout exists so the
+            rest timer keeps ticking even while the user navigates. Hidden via
+            display:none when minimized rather than unmounted. */}
+        {activeWorkout && (
+          <div style={{ display: activeWorkout.minimized ? "none" : "block" }}>
+            <WorkoutView workout={activeWorkout} setWorkout={setActiveWorkout} exercises={exercises} lastByExercise={lastByExercise} onCreateExercise={addExerciseToLibrary} onFinish={finishWorkout} />
+          </div>
+        )}
+
+        {/* Tab content + detail views render only when the workout view isn't
+            foregrounded (either no active workout, or it's minimized). */}
+        {!showWorkoutView && (
           <>
-            {tab === "home" && (
-              <HomeView
-                recentSessions={recentSessions}
-                recentExercisesList={recentExercisesList}
-                history={history}
-                plans={plans}
-                exercises={exercises}
-                onStartBlank={() => startWorkout()}
-                onStartFromPlan={(plan) => startWorkout(plan.exercises)}
-                onSelectExercise={(name) => pushView({ type: "exercise", name })}
-                onSelectSession={(id) => pushView({ type: "session", id })}
-                onOpenLibrary={() => pushView({ type: "library" })}
+            {!renderingDetail && (
+              <>
+                {tab === "home" && (
+                  <HomeView
+                    recentSessions={recentSessions}
+                    recentExercisesList={recentExercisesList}
+                    history={history}
+                    plans={plans}
+                    exercises={exercises}
+                    activeWorkout={activeWorkout}
+                    onStartBlank={() => startWorkout()}
+                    onStartFromPlan={(plan) => startWorkout(plan.exercises)}
+                    onResume={resumeWorkout}
+                    onSelectExercise={(name) => pushView({ type: "exercise", name })}
+                    onSelectSession={(id) => pushView({ type: "session", id })}
+                    onOpenLibrary={() => pushView({ type: "library" })}
+                  />
+                )}
+                {tab === "past" && (
+                  <PastView sessions={sessions} history={history} onSelectSession={(id) => pushView({ type: "session", id })} onGoHome={() => setTab("home")} />
+                )}
+                {tab === "plans" && (
+                  <PlansView plans={plans} onCreate={() => pushView({ type: "plan-edit", id: null })} onEdit={(id) => pushView({ type: "plan-edit", id })} onUse={(plan) => startWorkout(plan.exercises)} />
+                )}
+                {tab === "health" && <HealthView />}
+              </>
+            )}
+
+            {view?.type === "exercise" && (
+              <ExerciseDetailView
+                entries={history.filter(h => h.exercise === view.name).sort((a, b) => b.date.localeCompare(a.date))}
+                libEx={exercises.find(e => e.name === view.name)}
               />
             )}
-            {tab === "past" && (
-              <PastView sessions={sessions} history={history} onSelectSession={(id) => pushView({ type: "session", id })} onGoHome={() => setTab("home")} />
+            {view?.type === "session" && (
+              <SessionDetailView
+                session={sessions.find(s => s.id === view.id)}
+                entries={history.filter(h => h.workoutId === view.id).sort((a,b) => a.date.localeCompare(b.date))}
+                exercises={exercises}
+                lastByExercise={lastByExercise}
+                onUpdate={updateSession}
+                onDelete={deleteSession}
+                onCreateExercise={addExerciseToLibrary}
+              />
             )}
-            {tab === "plans" && (
-              <PlansView plans={plans} onCreate={() => pushView({ type: "plan-edit", id: null })} onEdit={(id) => pushView({ type: "plan-edit", id })} onUse={(plan) => startWorkout(plan.exercises)} />
+            {view?.type === "plan-edit" && (
+              <PlanEditView plan={view.id ? plans.find(p => p.id === view.id) : null} exercises={exercises} lastByExercise={lastByExercise} onSave={savePlan} onDelete={deletePlan} onCancel={popView} onCreateExercise={addExerciseToLibrary} />
             )}
-            {tab === "health" && <HealthView />}
+            {view?.type === "library" && (
+              <LibraryView exercises={exercises} lastByExercise={lastByExercise} onCreate={() => pushView({ type: "exercise-edit", id: null })} onEdit={(id) => pushView({ type: "exercise-edit", id })} onSelect={(name) => pushView({ type: "exercise", name })} />
+            )}
+            {view?.type === "exercise-edit" && (
+              <ExerciseEditView
+                exercise={view.id ? exercises.find(e => e.id === view.id) : null}
+                initialName={view.initialName}
+                onSave={(ex) => {
+                  if (ex.id) updateExerciseInLibrary(ex.id, ex);
+                  else addExerciseToLibrary(ex);
+                  popView();
+                }}
+                onDelete={(id) => { deleteExerciseFromLibrary(id); popView(); }}
+                onCancel={popView}
+              />
+            )}
+            {view?.type === "profile" && (
+              <ProfileView
+                profile={profile}
+                sessions={sessions}
+                history={history}
+                onEdit={() => pushView({ type: "profile-edit" })}
+              />
+            )}
+            {view?.type === "profile-edit" && (
+              <ProfileEditView
+                profile={profile}
+                onSave={(p) => {
+                  setProfile(p);
+                  if (session) syncProfileToSupabase(session.user.id, p);
+                  popView();
+                }}
+                onCancel={popView}
+              />
+            )}
           </>
         )}
 
-        {view?.type === "exercise" && (
-          <ExerciseDetailView
-            entries={history.filter(h => h.exercise === view.name).sort((a, b) => b.date.localeCompare(a.date))}
-            libEx={exercises.find(e => e.name === view.name)}
-          />
-        )}
-        {view?.type === "session" && (
-          <SessionDetailView
-            session={sessions.find(s => s.id === view.id)}
-            entries={history.filter(h => h.workoutId === view.id).sort((a,b) => a.date.localeCompare(b.date))}
-            exercises={exercises}
-            lastByExercise={lastByExercise}
-            onUpdate={updateSession}
-            onDelete={deleteSession}
-            onCreateExercise={addExerciseToLibrary}
-          />
-        )}
-        {view?.type === "plan-edit" && (
-          <PlanEditView plan={view.id ? plans.find(p => p.id === view.id) : null} exercises={exercises} lastByExercise={lastByExercise} onSave={savePlan} onDelete={deletePlan} onCancel={popView} onCreateExercise={addExerciseToLibrary} />
-        )}
-        {view?.type === "library" && (
-          <LibraryView exercises={exercises} lastByExercise={lastByExercise} onCreate={() => pushView({ type: "exercise-edit", id: null })} onEdit={(id) => pushView({ type: "exercise-edit", id })} onSelect={(name) => pushView({ type: "exercise", name })} />
-        )}
-        {view?.type === "exercise-edit" && (
-          <ExerciseEditView
-            exercise={view.id ? exercises.find(e => e.id === view.id) : null}
-            initialName={view.initialName}
-            onSave={(ex) => {
-              if (ex.id) updateExerciseInLibrary(ex.id, ex);
-              else addExerciseToLibrary(ex);
-              popView();
-            }}
-            onDelete={(id) => { deleteExerciseFromLibrary(id); popView(); }}
-            onCancel={popView}
-          />
-        )}
-        {view?.type === "profile" && (
-          <ProfileView
-            profile={profile}
-            sessions={sessions}
-            history={history}
-            onEdit={() => pushView({ type: "profile-edit" })}
-          />
-        )}
-        {view?.type === "profile-edit" && (
-          <ProfileEditView
-            profile={profile}
-            onSave={(p) => {
-              setProfile(p);
-              if (session) syncProfileToSupabase(session.user.id, p);
-              popView();
-            }}
-            onCancel={popView}
-          />
-        )}
-        {renderingWorkout && activeWorkout && (
-          <WorkoutView workout={activeWorkout} setWorkout={setActiveWorkout} exercises={exercises} lastByExercise={lastByExercise} onCreateExercise={addExerciseToLibrary} onFinish={finishWorkout} />
-        )}
-
-        {!renderingWorkout && !renderingDetail && <TabBar tab={tab} onChange={(t) => { setTab(t); resetView(); }} />}
+        <BottomDock
+          showTabBar={!showWorkoutView && !renderingDetail}
+          showMinimizedBar={!!activeWorkout && activeWorkout.minimized}
+          tab={tab}
+          onTabChange={(t) => { setTab(t); resetView(); }}
+          workout={activeWorkout}
+          onResume={resumeWorkout}
+        />
       </div>
       )}
     </div>
@@ -595,7 +659,8 @@ export default function App() {
 }
 
 // --- HEADER ---
-function Header({ tab, view, activeWorkout, profile, onBack, onCancelWorkout, onOpenProfile }) {
+function Header({ tab, view, activeWorkout, profile, onBack, onCancelWorkout, onMinimizeWorkout, onOpenProfile }) {
+  const inWorkoutView = !!activeWorkout && !activeWorkout.minimized;
   const titleMap = { home: "Spotter", past: "Past Workouts", plans: "Workout Plans", health: "Health" };
   let label = new Date().toLocaleDateString("en-US", { weekday: "long" });
   let title = titleMap[tab];
@@ -608,10 +673,12 @@ function Header({ tab, view, activeWorkout, profile, onBack, onCancelWorkout, on
   if (view?.type === "exercise-edit") { title = view.id ? "Edit Exercise" : "New Exercise"; titleClass = "serif"; }
   if (view?.type === "profile") { title = "Profile"; titleClass = "serif"; }
   if (view?.type === "profile-edit") { title = "Edit Profile"; titleClass = "serif"; }
-  if (view?.type === "workout") { label = "Active Session"; title = <WorkoutTimer startedAt={activeWorkout?.startedAt} />; titleClass = "mono"; }
+  // Workout view overrides whatever else might be in view — when foregrounded
+  // the header always shows the active-session timer.
+  if (inWorkoutView) { label = "Active Session"; title = <WorkoutTimer startedAt={activeWorkout?.startedAt} />; titleClass = "mono"; }
 
-  const showBack = view && view.type !== "workout";
-  const showProfileBubble = view?.type !== "workout" && view?.type !== "profile" && view?.type !== "profile-edit";
+  const showBack = !!view && !inWorkoutView;
+  const showProfileBubble = !inWorkoutView && view?.type !== "profile" && view?.type !== "profile-edit";
 
   return (
     <div className="sticky top-0 z-10 backdrop-blur-xl border-b border-soft pt-safe" style={{ background: "rgba(250, 251, 253, 0.85)" }}>
@@ -621,13 +688,18 @@ function Header({ tab, view, activeWorkout, profile, onBack, onCancelWorkout, on
             <ChevronLeft size={22} />
           </button>
         )}
+        {inWorkoutView && (
+          <button onClick={onMinimizeWorkout} aria-label="Minimize workout" className="w-9 h-9 -ml-2 flex items-center justify-center text-navy-500 hover:text-navy-900 shrink-0 transition">
+            <ChevronDown size={22} />
+          </button>
+        )}
         <div className="min-w-0 flex-1">
           <div className="text-[10px] uppercase tracking-[0.18em] text-navy-400 mono font-medium">{label}</div>
           <h1 className={`text-[26px] font-semibold tracking-tight mt-0.5 truncate text-navy-900 ${titleClass}`} style={{ fontWeight: titleClass === "serif" ? 500 : 600 }}>
             {title}
           </h1>
         </div>
-        {view?.type === "workout" && (
+        {inWorkoutView && (
           <button onClick={onCancelWorkout} className="text-xs uppercase tracking-wider text-navy-500 hover:text-red-600 shrink-0 mono">cancel</button>
         )}
         {showProfileBubble && profile && (
@@ -680,32 +752,87 @@ function TabBar({ tab, onChange }) {
     { id: "health", icon: Heart, label: "Health" },
   ];
   return (
-    <div className="fixed bottom-0 left-0 right-0 z-20">
-      <div className="max-w-md mx-auto backdrop-blur-xl border-t border-soft px-2 pb-safe" style={{ background: "rgba(255, 255, 255, 0.92)" }}>
-        <div className="flex items-center justify-around py-2">
-          {tabs.map(t => {
-            const Icon = t.icon;
-            const active = tab === t.id;
-            return (
-              <button
-                key={t.id}
-                onClick={() => onChange(t.id)}
-                className="flex-1 flex flex-col items-center gap-1 py-2 px-1 rounded-xl transition"
-                style={{ color: active ? "var(--navy-900)" : "var(--navy-400)" }}
-              >
-                <Icon size={20} strokeWidth={active ? 2.4 : 1.8} />
-                <span className={`text-[10px] tracking-wider ${active ? "font-semibold" : "font-medium"}`} style={{ fontFamily: "Inter" }}>{t.label}</span>
-              </button>
-            );
-          })}
+    <div className="backdrop-blur-xl border-t border-soft px-2 pb-safe" style={{ background: "rgba(255, 255, 255, 0.92)" }}>
+      <div className="flex items-center justify-around py-2">
+        {tabs.map(t => {
+          const Icon = t.icon;
+          const active = tab === t.id;
+          return (
+            <button
+              key={t.id}
+              onClick={() => onChange(t.id)}
+              className="flex-1 flex flex-col items-center gap-1 py-2 px-1 rounded-xl transition"
+              style={{ color: active ? "var(--navy-900)" : "var(--navy-400)" }}
+            >
+              <Icon size={20} strokeWidth={active ? 2.4 : 1.8} />
+              <span className={`text-[10px] tracking-wider ${active ? "font-semibold" : "font-medium"}`} style={{ fontFamily: "Inter" }}>{t.label}</span>
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+// Always-visible pill that surfaces an active workout while the user is
+// browsing other parts of the app. Tap to resume the full workout view.
+function MinimizedWorkoutBar({ workout, onResume }) {
+  const [now, setNow] = useState(Date.now());
+  useEffect(() => {
+    const i = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(i);
+  }, []);
+
+  const elapsed = workout.startedAt ? formatDuration(now - new Date(workout.startedAt).getTime()) : "0:00";
+  const exCount = workout.exercises?.length || 0;
+  // No activeIdx is persisted on the workout itself today (it lives in
+  // WorkoutView's local state). Default to the last exercise — that's what
+  // the workout view itself opens to on remount, so the bar stays in sync.
+  const activeIdx = exCount > 0 ? exCount - 1 : 0;
+  const activeName = workout.exercises?.[activeIdx]?.exercise || "Workout";
+
+  return (
+    <div className="px-3 pt-2 pb-1">
+      <button
+        onClick={onResume}
+        className="w-full rounded-xl px-4 py-2.5 flex items-center gap-3 transition active:scale-[0.99] navy-shadow"
+        style={{ background: "linear-gradient(135deg, var(--navy-900) 0%, var(--navy-700) 100%)" }}
+        aria-label="Resume workout"
+      >
+        <div className="flex items-center gap-1.5 shrink-0">
+          <span className="w-2 h-2 rounded-full pulse-dot" style={{ background: "var(--success)" }} />
+          <span className="text-[10px] uppercase tracking-[0.18em] mono font-medium text-white/70">Active</span>
         </div>
+        <div className="flex-1 min-w-0 text-left text-white truncate">
+          <span className="serif text-sm" style={{ fontWeight: 500 }}>{activeName}</span>
+          <span className="text-white/60 mono text-xs ml-1.5">· {elapsed}</span>
+        </div>
+        <ChevronUp size={16} className="text-white/60 shrink-0" />
+      </button>
+    </div>
+  );
+}
+
+// Container at the bottom of the viewport that stacks the minimized workout
+// bar (when a workout is in flight and minimized) above the tab bar (when
+// not in a detail view). Either, both, or neither may render. When the
+// minimized bar is the only child, the dock absorbs the safe-area inset
+// itself; otherwise the tab bar handles it.
+function BottomDock({ showTabBar, showMinimizedBar, tab, onTabChange, workout, onResume }) {
+  if (!showTabBar && !showMinimizedBar) return null;
+  const minimizedOnly = showMinimizedBar && !showTabBar;
+  return (
+    <div className={`fixed bottom-0 left-0 right-0 z-20 ${minimizedOnly ? "pb-safe" : ""}`}>
+      <div className="max-w-md mx-auto">
+        {showMinimizedBar && <MinimizedWorkoutBar workout={workout} onResume={onResume} />}
+        {showTabBar && <TabBar tab={tab} onChange={onTabChange} />}
       </div>
     </div>
   );
 }
 
 // --- HOME ---
-function HomeView({ recentSessions, recentExercisesList, history, plans, exercises, onStartBlank, onStartFromPlan, onSelectSession, onOpenLibrary }) {
+function HomeView({ recentSessions, recentExercisesList, history, plans, exercises, activeWorkout, onStartBlank, onStartFromPlan, onResume, onSelectSession, onOpenLibrary }) {
   const [showPlanPicker, setShowPlanPicker] = useState(false);
 
   const greeting = useMemo(() => {
@@ -725,14 +852,19 @@ function HomeView({ recentSessions, recentExercisesList, history, plans, exercis
         </div>
       </div>
 
-      {/* Hero start button */}
+      {/* Hero start button — switches to "Resume Workout" while a workout is
+          minimized so we never accidentally start a second one over the top. */}
       <button
-        onClick={() => plans.length > 0 ? setShowPlanPicker(true) : onStartBlank()}
+        onClick={() => {
+          if (activeWorkout) onResume();
+          else if (plans.length > 0) setShowPlanPicker(true);
+          else onStartBlank();
+        }}
         className="mt-5 w-full bg-navy-900 text-white py-6 rounded-3xl font-semibold text-base flex items-center justify-center gap-2.5 navy-shadow active:scale-[0.98] transition"
         style={{ background: "var(--navy-900)" }}
       >
         <Play size={20} strokeWidth={2.5} fill="currentColor" />
-        Start Workout
+        {activeWorkout ? "Resume Workout" : "Start Workout"}
       </button>
 
       {showPlanPicker && (
@@ -1206,8 +1338,14 @@ function Field({ label, hint, children }) {
 }
 
 function BottomBar({ children }) {
+  // bottom is offset by --bottom-stack-offset (set on .app-content) so this
+  // bar floats above the minimized workout pill in detail views like session
+  // edit. Defaults to 0 when no workout is minimized.
   return (
-    <div className="fixed bottom-0 left-0 right-0 backdrop-blur-xl border-t border-soft" style={{ background: "rgba(255, 255, 255, 0.92)" }}>
+    <div
+      className="fixed left-0 right-0 backdrop-blur-xl border-t border-soft"
+      style={{ background: "rgba(255, 255, 255, 0.92)", bottom: "var(--bottom-stack-offset, 0px)" }}
+    >
       <div className="max-w-md mx-auto px-5 py-3 flex gap-2">{children}</div>
     </div>
   );

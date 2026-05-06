@@ -39,3 +39,12 @@ input, textarea, select {
   .app-content { display: none; }
   .rotate-warning { display: flex; }
 }
+
+/* Subtle pulsing dot used in the minimized active-workout bar. */
+@keyframes pulse-dot-fade {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.35; }
+}
+.pulse-dot {
+  animation: pulse-dot-fade 1.4s ease-in-out infinite;
+}
