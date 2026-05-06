@@ -7,6 +7,7 @@ import {
 } from "lucide-react";
 import { useLocalStorage } from "./hooks/useLocalStorage";
 import { useSessionState, signOut } from "./lib/auth";
+import { supabase } from "./lib/supabase";
 import { AuthGate } from "./auth/AuthGate";
 import { SetNewPasswordScreen } from "./auth/SetNewPasswordScreen";
 import { OnboardingScreen } from "./auth/OnboardingScreen";
@@ -172,6 +173,30 @@ function readUserOnboarded(session) {
   return false;
 }
 
+// Mirror the localStorage profile fields we care about onto the user's row in
+// the Supabase `profiles` table. Stage 2 keeps localStorage as the source of
+// truth — this is additive, so a Supabase failure never blocks the user.
+// Stage 3 is where the data flips direction. Fire-and-forget; errors are
+// logged but not surfaced.
+function syncProfileToSupabase(userId, fields) {
+  if (!userId) return;
+  supabase
+    .from("profiles")
+    .update({
+      name: fields.name || null,
+      height_cm: fields.heightCm ?? null,
+      weight_kg: fields.weightKg ?? null,
+      gender: fields.gender ?? null,
+      home_gym: fields.homeGym || null,
+      experience_level: fields.experienceLevel ?? null,
+      units: fields.units ?? null,
+    })
+    .eq("id", userId)
+    .then(({ error }) => {
+      if (error) console.error("[profiles] update failed:", error);
+    });
+}
+
 // --- ROOT ---
 export default function App() {
   const [history, setHistory] = useLocalStorage("history", seedHistory);
@@ -202,15 +227,6 @@ export default function App() {
   const popView = () => setViewStack(stack => stack.slice(0, -1));
   const resetView = () => setViewStack([]);
   const [activeWorkout, setActiveWorkout] = useLocalStorage("activeWorkout", null);
-
-  // If we have an active workout when the app loads, drop the user back into it
-  useEffect(() => {
-    if (activeWorkout && viewStack.length === 0) {
-      setViewStack([{ type: "workout" }]);
-    }
-    // Only run on mount — we want this exactly once
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
 
   const lastByExercise = useMemo(() => {
     const map = new Map();
@@ -309,6 +325,24 @@ export default function App() {
   //   6. signed in + onboarded: the existing app
   const { session, loading: authLoading, isPasswordRecovery } = useSessionState();
 
+  // Reset to Home whenever the user transitions from signed-out to signed-in
+  // — covers both initial session restore on app load and explicit sign-in
+  // after a sign-out. tab/viewStack aren't persisted, so this only matters
+  // for the in-memory state across an auth round-trip (the bug being that
+  // tab=profile leaked from a previous session into the post-signin landing).
+  // If an active workout is in flight, resume into it instead — that's a
+  // documented mid-session feature we want to preserve.
+  const prevSessionRef = useRef(null);
+  useEffect(() => {
+    const wasSignedOut = prevSessionRef.current === null;
+    prevSessionRef.current = session;
+    if (session && wasSignedOut) {
+      setTab("home");
+      setViewStack(activeWorkout ? [{ type: "workout" }] : []);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [session]);
+
   // Synchronous read so already-initialized users never see a flash.
   // localStorage is shared across all users on this device; this flag
   // ensures we wipe & reset to a clean state the first time each userId
@@ -356,6 +390,11 @@ export default function App() {
     setProfile({ ...profile, ...patch });
     if (session) {
       localStorage.setItem(`liftlog:onboarded:${session.user.id}`, "true");
+      // Skip sends an empty patch; only mirror to Supabase when the user
+      // actually filled in (or confirmed) values via Continue.
+      if (Object.keys(patch).length > 0) {
+        syncProfileToSupabase(session.user.id, patch);
+      }
     }
   };
 
@@ -518,7 +557,11 @@ export default function App() {
         {view?.type === "profile-edit" && (
           <ProfileEditView
             profile={profile}
-            onSave={(p) => { setProfile(p); popView(); }}
+            onSave={(p) => {
+              setProfile(p);
+              if (session) syncProfileToSupabase(session.user.id, p);
+              popView();
+            }}
             onCancel={popView}
           />
         )}
