@@ -152,11 +152,31 @@ These are real product directions Mac is interested in but explicitly deferred. 
 
 - **Apple Health integration** — listed elsewhere; reiterating here that this requires a Capacitor or native iOS wrapper, not just PWA. Don't try to bolt it on inside the PWA.
 
+- **AI-generated workout plans from natural-language goals.** Replace (or supplement) the simple "Goal" text field with the ability for users to describe their goals in plain language ("I want to put on size in my arms," "training for a wedding in 6 months," "rebuilding after knee surgery"). The app would call an LLM server-side to generate a personalized multi-week plan that gets added to their Plans tab as regular plan(s).
+
+  Required infrastructure:
+  - Serverless function (Vercel Edge Function or Supabase Edge Function) to call the LLM API — never call from client code, the API key must stay server-side
+  - Structured output schema so plans deserialize into the existing plans/exercises data model
+  - Rate limiting per user (e.g. one generation per day) to control cost
+  - Loading state with streaming output if possible (generations take 5-30 seconds)
+
+  Design questions to settle when building:
+  - One-shot static plan, or dynamic plan that adapts based on logged workouts each week?
+  - Can the user edit the AI's plan before accepting, or is it locked?
+  - What fallbacks if the LLM returns garbage or references exercises not in the user's library?
+  - How prominent in the UI? Profile field? Dedicated "AI coach" tab? Onboarding step?
+
+  This is the kind of feature that would meaningfully differentiate Spotter from "yet another lift logger." But it's substantial work (2-3 weeks of focused development) and depends on real usage signal first — wait until Spotter has been used by Mac and a small group of friends for several weeks of actual training before building, so the AI has a decent sense of what good plans look like in practice. Don't build before that.
+
+  Cost expectation: $0.005-$0.05 per generation depending on model and context size. Negligible for personal/friends use, becomes real at scale.
+
 ## Known limitations (not blocking)
 
 - **DOB backfill on every sign-in.** The migration that populates DOB from auth metadata into the profiles table runs on every fetch where DOB is null. If a user deliberately clears their DOB and signs back in, it will be re-populated from signup metadata. Probably fine — auth metadata is treated as the source of truth at signup — but worth knowing it isn't strictly a one-shot migration.
 
 - **Race condition on first-ever profile fetch after signup.** Brief window (~milliseconds) between `auth.users` insert and the `handle_new_user` trigger creating the corresponding `profiles` row. If the app fetches the profile in that window, it fails and the user sees a retry button. Retry always succeeds. Not worth fixing at current scale; would require either polling the trigger or having the app create the profile row itself instead of relying on the DB trigger.
+
+- **Portrait orientation can't be enforced in a PWA.** The manifest requests `orientation: portrait` but iOS Safari (and most mobile browsers) ignore that hint for installed PWAs. The fallback is a CSS-only `.rotate-warning` overlay shown via `@media (max-width: 768px) and (orientation: landscape)` that hides `.app-content` and swaps in a "rotate to portrait" message. This is as good as it gets — `screen.orientation.lock()` is unsupported in Safari and unreliable elsewhere. Don't try to enforce orientation programmatically.
 
 ## When in doubt
 

@@ -1465,12 +1465,15 @@ function HomeView({ recentSessions, recentExercisesList, sessions, history, plan
               <div className="text-[10px] uppercase tracking-[0.18em] text-navy-500 mono font-medium mt-1">Workouts</div>
             </div>
             {weeklyGoal != null && (
-              <div className="flex items-center gap-2 shrink-0" aria-hidden="true">
+              // flex-wrap + justify-end so a streak that overflows the
+              // card width breaks onto a second row beneath the navy
+              // dots rather than getting clipped or squeezing the count.
+              <div className="flex flex-wrap items-center justify-end gap-2" aria-hidden="true">
                 {Array.from({ length: weeklyGoal }).map((_, i) => {
                   const done = i < workoutsThisWeek;
                   return (
                     <span
-                      key={i}
+                      key={`g-${i}`}
                       className="w-2.5 h-2.5 rounded-full"
                       style={{
                         background: done ? "var(--navy-900)" : "transparent",
@@ -1479,6 +1482,14 @@ function HomeView({ recentSessions, recentExercisesList, sessions, history, plan
                     />
                   );
                 })}
+                {workoutsThisWeek > weeklyGoal &&
+                  Array.from({ length: workoutsThisWeek - weeklyGoal }).map((_, i) => (
+                    <span
+                      key={`b-${i}`}
+                      className="w-2.5 h-2.5 rounded-full"
+                      style={{ background: "var(--success)" }}
+                    />
+                  ))}
               </div>
             )}
           </div>
@@ -2686,26 +2697,7 @@ function ExerciseSearchSheet({ exercises, lastByExercise, excluded = [], onPick,
           </div>
         </div>
 
-        <div className="flex-1 overflow-y-auto px-5 pb-8">
-          {showCreate && (
-            <button
-              onClick={() => onCreateNew(search.trim())}
-              className="w-full mb-3 rounded-xl p-4 flex items-center gap-3 transition text-left border"
-              style={{
-                background: "linear-gradient(135deg, var(--navy-50) 0%, var(--surface) 100%)",
-                borderColor: "var(--navy-200)",
-              }}
-            >
-              <div className="w-10 h-10 rounded-xl flex items-center justify-center shrink-0" style={{ background: "var(--navy-100)" }}>
-                <Sparkles size={16} className="text-navy-700" />
-              </div>
-              <div className="flex-1 min-w-0">
-                <div className="font-semibold text-navy-900 truncate">Create "{search.trim()}"</div>
-                <div className="text-xs text-navy-500 mt-0.5">Add to your library</div>
-              </div>
-            </button>
-          )}
-
+        <div className="flex-1 overflow-y-auto px-5 pb-4">
           {filtered.length === 0 && !showCreate && (
             <div className="text-center py-8 text-sm text-navy-500">All exercises already added</div>
           )}
@@ -2728,6 +2720,31 @@ function ExerciseSearchSheet({ exercises, lastByExercise, excluded = [], onPick,
             })}
           </div>
         </div>
+
+        {/* Pinned Create row — kept outside the scroll area so the iOS
+            keyboard doesn't bury it. Anchoring it to the bottom of the
+            sheet means it sits just above the keyboard regardless of how
+            many results are listed above. */}
+        {showCreate && (
+          <div className="shrink-0 px-5 pt-3 pb-5 border-t" style={{ borderColor: "var(--border)" }}>
+            <button
+              onClick={() => onCreateNew(search.trim())}
+              className="w-full rounded-xl p-4 flex items-center gap-3 transition text-left border"
+              style={{
+                background: "linear-gradient(135deg, var(--navy-50) 0%, var(--surface) 100%)",
+                borderColor: "var(--navy-200)",
+              }}
+            >
+              <div className="w-10 h-10 rounded-xl flex items-center justify-center shrink-0" style={{ background: "var(--navy-100)" }}>
+                <Sparkles size={16} className="text-navy-700" />
+              </div>
+              <div className="flex-1 min-w-0">
+                <div className="font-semibold text-navy-900 truncate">Create "{search.trim()}"</div>
+                <div className="text-xs text-navy-500 mt-0.5">Add to your library</div>
+              </div>
+            </button>
+          </div>
+        )}
       </div>
     </div>
   );
