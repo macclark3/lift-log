@@ -132,6 +132,46 @@ function formatDuration(ms) {
   return `${m}:${String(s).padStart(2,"0")}`;
 }
 
+// Synchronous read of the per-user onboarded flag, with a one-time migration
+// for accounts that completed welcome before the flag was per-user.
+//
+// Returns:
+//   null  — no session
+//   false — initialized but onboarding not complete (show welcome)
+//   true  — onboarded (show main app)
+//
+// Side effect: when the migration condition is met, writes the per-user
+// onboarded flag so subsequent reads short-circuit. Idempotent.
+function readUserOnboarded(session) {
+  if (!session) return null;
+  const initKey = `liftlog:initialized:${session.user.id}`;
+  const onboardedKey = `liftlog:onboarded:${session.user.id}`;
+  // Not initialized yet — the wipe will run and we'll come back through here.
+  if (!localStorage.getItem(initKey)) return false;
+  if (localStorage.getItem(onboardedKey) === "true") return true;
+  // Migration: users who completed welcome under the legacy mechanism set
+  // profile.onboarded=true; users who entered any field also count. Either
+  // way, treat them as onboarded so they don't hit the welcome screen again.
+  const profileStr = localStorage.getItem("liftlog:profile");
+  let p = null;
+  try { p = profileStr ? JSON.parse(profileStr) : null; } catch { p = null; }
+  const hasPriorData = !!(p && (
+    p.onboarded === true ||
+    p.name ||
+    p.heightCm ||
+    p.weightKg ||
+    p.gender ||
+    p.homeGym ||
+    p.experienceLevel ||
+    p.dateOfBirth
+  ));
+  if (hasPriorData) {
+    localStorage.setItem(onboardedKey, "true");
+    return true;
+  }
+  return false;
+}
+
 // --- ROOT ---
 export default function App() {
   const [history, setHistory] = useLocalStorage("history", seedHistory);
@@ -275,6 +315,10 @@ export default function App() {
   // appears here, then never again for that user.
   const userInitKey = session ? `liftlog:initialized:${session.user.id}` : null;
   const userInitialized = userInitKey ? !!localStorage.getItem(userInitKey) : null;
+  // Onboarded flag is per-user (keyed by userId) so it doesn't leak across
+  // different accounts on the same device. readUserOnboarded also handles
+  // the one-time migration for accounts that pre-date the per-user keying.
+  const userOnboarded = readUserOnboarded(session);
 
   // First time we see this user on this device: wipe per-user localStorage
   // back to a clean state before they (or anyone else) sees the main app.
@@ -301,14 +345,18 @@ export default function App() {
       units: "imperial",
       memberSince: new Date().toISOString().split("T")[0],
       experienceLevel: null,
-      onboarded: false,
     });
     localStorage.setItem(userInitKey, "1");
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [session, userInitialized]);
 
   const finishOnboarding = (patch) => {
-    setProfile({ ...profile, ...patch, onboarded: true });
+    // Always re-set profile (even with empty patch) so the synchronous
+    // userOnboarded read picks up the new flag on the next render.
+    setProfile({ ...profile, ...patch });
+    if (session) {
+      localStorage.setItem(`liftlog:onboarded:${session.user.id}`, "true");
+    }
   };
 
   let authShell = null;
@@ -316,7 +364,7 @@ export default function App() {
   else if (isPasswordRecovery) authShell = <SetNewPasswordScreen />;
   else if (!session) authShell = <AuthGate />;
   else if (!userInitialized) authShell = <AuthLoading />;
-  else if (!profile.onboarded) {
+  else if (!userOnboarded) {
     authShell = <OnboardingScreen onComplete={finishOnboarding} />;
   }
 
