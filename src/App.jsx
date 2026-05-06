@@ -17,6 +17,9 @@ import { OnboardingScreen } from "./auth/OnboardingScreen";
 import { AuthLoading, ProfileLoadError } from "./auth/AuthLayout";
 
 // --- SEED EXERCISES ---
+// trackingMode defaults to 'reps' on every entry; the time-tracked seeds at
+// the bottom (planks, etc.) are bodyweight + time so the rep-range numbers
+// are interpreted as seconds.
 const seedExercises = [
   { id: "ex-bench", name: "Bench Press", targetReps: [8, 12], unit: "lb", muscle: "Chest", equipment: "Barbell", bumpRule: "all", increment: 5 },
   { id: "ex-incdb", name: "Incline Dumbell Press", targetReps: [10, 15], unit: "lb", muscle: "Chest", equipment: "Dumbbell", bumpRule: "majority", increment: 2.5 },
@@ -28,6 +31,11 @@ const seedExercises = [
   { id: "ex-seated", name: "Seated Dumbell Press", targetReps: [8, 12], unit: "lb", muscle: "Shoulders", equipment: "Dumbbell", bumpRule: "all", increment: 2.5 },
   { id: "ex-lateral", name: "Lateral Raises", targetReps: [12, 15], unit: "lb", muscle: "Shoulders", equipment: "Dumbbell", bumpRule: "majority", increment: 2.5 },
   { id: "ex-face", name: "Face Pulls", targetReps: [12, 15], unit: "lb", muscle: "Shoulders", equipment: "Cable", bumpRule: "majority", increment: 5 },
+  { id: "ex-plank", name: "Plank", targetReps: [30, 60], unit: "lb", muscle: "Core", equipment: "Bodyweight", bumpRule: "all", increment: 5, tracksWeight: false, trackingMode: "time" },
+  { id: "ex-side-plank", name: "Side Plank", targetReps: [30, 60], unit: "lb", muscle: "Core", equipment: "Bodyweight", bumpRule: "all", increment: 5, tracksWeight: false, trackingMode: "time" },
+  { id: "ex-wall-sit", name: "Wall Sit", targetReps: [30, 60], unit: "lb", muscle: "Legs", equipment: "Bodyweight", bumpRule: "all", increment: 5, tracksWeight: false, trackingMode: "time" },
+  { id: "ex-dead-hang", name: "Dead Hang", targetReps: [20, 45], unit: "lb", muscle: "Back", equipment: "Bodyweight", bumpRule: "all", increment: 5, tracksWeight: false, trackingMode: "time" },
+  { id: "ex-ab-rollout", name: "Ab Wheel Rollout", targetReps: [20, 45], unit: "lb", muscle: "Core", equipment: "Bodyweight", bumpRule: "all", increment: 5, tracksWeight: false, trackingMode: "time" },
 ];
 
 const seedPlans = [
@@ -43,6 +51,20 @@ const EQUIPMENT_TYPES = ["Barbell", "Dumbbell", "Cable", "Machine", "Bodyweight"
 // this field) are weighted. Only an explicit `false` means bodyweight.
 function tracksWeightFor(libEx) {
   return libEx?.tracksWeight !== false;
+}
+
+// trackingMode defaults to 'reps' for legacy/missing values. Time-tracked
+// exercises (planks, hangs, etc.) store their second-counts in the same
+// reps array — only the display label and stat math differ.
+function trackingModeFor(libEx) {
+  return libEx?.trackingMode === "time" ? "time" : "reps";
+}
+function isTimeTracked(libEx) {
+  return trackingModeFor(libEx) === "time";
+}
+// Single-letter unit suffix used in compact set readouts ("45s · 60s · 30s").
+function setUnitSuffix(libEx) {
+  return isTimeTracked(libEx) ? "s" : "";
 }
 
 // Progression rule is configurable per exercise:
@@ -195,6 +217,9 @@ function mapRowToExercise(row) {
     // Default true matches the JS-side convention: undefined / null means
     // "weighted exercise" unless the row explicitly sets tracks_weight=false.
     tracksWeight: row.tracks_weight !== false,
+    // Default 'reps' so rows that predate this column behave exactly as
+    // they did before (and the DB CHECK constraint keeps us honest).
+    trackingMode: row.tracking_mode === "time" ? "time" : "reps",
   };
 }
 
@@ -211,6 +236,7 @@ function exerciseToDbRow(ex, userId) {
     bump_rule: ex.bumpRule ?? null,
     increment: ex.increment ?? null,
     tracks_weight: ex.tracksWeight !== false,
+    tracking_mode: ex.trackingMode === "time" ? "time" : "reps",
     visibility: "private",
   };
 }
@@ -230,6 +256,7 @@ function exerciseToDbPatch(patch) {
   if ("bumpRule" in patch) out.bump_rule = patch.bumpRule ?? null;
   if ("increment" in patch) out.increment = patch.increment ?? null;
   if ("tracksWeight" in patch) out.tracks_weight = patch.tracksWeight !== false;
+  if ("trackingMode" in patch) out.tracking_mode = patch.trackingMode === "time" ? "time" : "reps";
   return out;
 }
 
@@ -1136,6 +1163,7 @@ export default function App() {
                 profile={profile}
                 sessions={sessions}
                 history={history}
+                exercises={exercises}
                 onEdit={() => pushView({ type: "profile-edit" })}
               />
             )}
@@ -1367,10 +1395,22 @@ function HomeView({ recentSessions, recentExercisesList, sessions, history, plan
 
   const weeklyGoal = profile?.weeklyWorkoutGoal ?? null;
 
+  // Pills: exercises whose most-recent entry has earned a level-up.
+  // Hoisted above monthStats because the stat math also needs to look up
+  // each entry's tracking mode.
+  const libByName = useMemo(() => {
+    const m = new Map();
+    (exercises || []).forEach(e => m.set(e.name, e));
+    return m;
+  }, [exercises]);
+
   // This month — total volume / sets / reps for entries dated within the
   // current calendar month. Volume converts each entry's value to the
   // user's preferred unit before summing (mixed lb/kg histories have to
-  // be normalized) and skips bodyweight (weight 0/null) entries.
+  // be normalized) and skips bodyweight (weight 0/null) entries. Time-
+  // tracked entries (planks, hangs) count toward sets but contribute zero
+  // to reps and volume — the numbers in their reps array are seconds,
+  // not reps, so summing them would inflate both stats.
   const monthStats = useMemo(() => {
     const now = new Date();
     const monthStart = new Date(now.getFullYear(), now.getMonth(), 1).getTime();
@@ -1381,6 +1421,7 @@ function HomeView({ recentSessions, recentExercisesList, sessions, history, plan
     (history || []).forEach(entry => {
       if (new Date(entry.date).getTime() < monthStart) return;
       sets += entry.reps.length;
+      if (isTimeTracked(libByName.get(entry.exercise))) return;
       const entryReps = entry.reps.reduce((a, b) => a + b, 0);
       reps += entryReps;
       if (!entry.weight || entry.weight <= 0) return;
@@ -1391,14 +1432,7 @@ function HomeView({ recentSessions, recentExercisesList, sessions, history, plan
       volume += weight * entryReps;
     });
     return { volume: Math.round(volume), sets, reps, unit: targetUnit };
-  }, [history, profile?.units]);
-
-  // Pills: exercises whose most-recent entry has earned a level-up.
-  const libByName = useMemo(() => {
-    const m = new Map();
-    (exercises || []).forEach(e => m.set(e.name, e));
-    return m;
-  }, [exercises]);
+  }, [history, profile?.units, libByName]);
   const readyToBump = useMemo(
     () => (recentExercisesList || []).filter(e => getProgressionStatus(e, libByName.get(e.exercise))?.status === "bump"),
     [recentExercisesList, libByName]
@@ -1666,7 +1700,7 @@ function LibraryView({ exercises, lastByExercise, onCreate, onEdit, onSelect }) 
                   <button onClick={() => onSelect(ex.name)} className="flex-1 text-left p-3.5 min-w-0">
                     <div className="font-medium text-navy-900 truncate">{ex.name}</div>
                     <div className="flex items-center gap-1.5 mt-1 text-xs text-navy-500 mono">
-                      <span>{ex.targetReps[0]}–{ex.targetReps[1]} reps</span>
+                      <span>{ex.targetReps[0]}–{ex.targetReps[1]} {isTimeTracked(ex) ? "sec" : "reps"}</span>
                       <span style={{ color: "var(--navy-200)" }}>·</span>
                       <span>{tracksWeightFor(ex) ? `+${ex.increment ?? 5}${ex.unit}` : "bodyweight"}</span>
                       {ex.equipment && <><span style={{ color: "var(--navy-200)" }}>·</span><span>{ex.equipment}</span></>}
@@ -1719,15 +1753,20 @@ function ExerciseEditView({ exercise, initialName, saveError, onSave, onDelete, 
   const [maxReps, setMaxReps] = useState(exercise?.targetReps[1] ?? 12);
   const [unit, setUnit] = useState(exercise?.unit || "lb");
   const [tracksWeight, setTracksWeight] = useState(exercise ? exercise.tracksWeight !== false : true);
+  const [trackingMode, setTrackingMode] = useState(exercise?.trackingMode === "time" ? "time" : "reps");
   const [bumpRule, setBumpRule] = useState(exercise?.bumpRule || "all");
   const [increment, setIncrement] = useState(exercise?.increment ?? 5);
 
+  const isTime = trackingMode === "time";
+  // "rep range" wording reused for both modes — only the trailing noun
+  // changes ("reps" vs "seconds"). Form-level validation is identical.
+  const targetNoun = isTime ? "seconds" : "reps";
   const canSave = name.trim() && minReps > 0 && maxReps >= minReps && (!tracksWeight || increment > 0);
 
   const ruleDescription = {
-    all: `every set hits ${maxReps}+ reps`,
-    majority: `most sets hit ${maxReps}+ reps`,
-    any: `any one set hits ${maxReps}+ reps`,
+    all: `every set hits ${maxReps}+ ${targetNoun}`,
+    majority: `most sets hit ${maxReps}+ ${targetNoun}`,
+    any: `any one set hits ${maxReps}+ ${targetNoun}`,
   }[bumpRule];
 
   return (
@@ -1761,12 +1800,19 @@ function ExerciseEditView({ exercise, initialName, saveError, onSave, onDelete, 
           </div>
         </Field>
 
-        <Field label="Target rep range">
+        <Field label="Tracking mode" hint="Time-tracked exercises log seconds per set instead of reps. Stats math skips them for volume/reps but still counts the sets.">
+          <div className="flex gap-1.5">
+            <FilterChip active={!isTime} onClick={() => setTrackingMode("reps")}>Reps</FilterChip>
+            <FilterChip active={isTime} onClick={() => setTrackingMode("time")}>Time</FilterChip>
+          </div>
+        </Field>
+
+        <Field label={isTime ? "Target time range" : "Target rep range"}>
           <div className="flex items-center gap-2">
             <input type="number" inputMode="numeric" value={minReps || ""} onChange={e => setMinReps(parseInt(e.target.value) || 0)} onFocus={focusToEnd} className="w-20 surface border border-soft rounded-xl px-3 py-3 text-center text-base mono focus:outline-none focus:border-strong text-navy-900" />
             <span className="text-navy-400">–</span>
             <input type="number" inputMode="numeric" value={maxReps || ""} onChange={e => setMaxReps(parseInt(e.target.value) || 0)} onFocus={focusToEnd} className="w-20 surface border border-soft rounded-xl px-3 py-3 text-center text-base mono focus:outline-none focus:border-strong text-navy-900" />
-            <span className="text-sm text-navy-500">reps</span>
+            <span className="text-sm text-navy-500">{targetNoun}</span>
           </div>
         </Field>
 
@@ -1850,7 +1896,7 @@ function ExerciseEditView({ exercise, initialName, saveError, onSave, onDelete, 
                   <span className="mono font-semibold" style={{ color: "var(--accent)" }}>{increment} {unit}</span>.</>
                 ) : (
                   <>When <span className="font-semibold">{ruleDescription}</span>, the app will nudge you to push past{" "}
-                  <span className="mono font-semibold" style={{ color: "var(--accent)" }}>{maxReps} reps</span> next session.</>
+                  <span className="mono font-semibold" style={{ color: "var(--accent)" }}>{maxReps} {targetNoun}</span> next session.</>
                 )}
               </div>
             </div>
@@ -1867,7 +1913,7 @@ function ExerciseEditView({ exercise, initialName, saveError, onSave, onDelete, 
       <BottomBar>
         <button onClick={onCancel} className="flex-1 py-3 rounded-xl border border-soft text-navy-700 font-medium text-sm">Cancel</button>
         <button
-          onClick={() => canSave && onSave({ id: exercise?.id, name: name.trim(), muscle, equipment, targetReps: [minReps, maxReps], unit, tracksWeight, bumpRule, increment })}
+          onClick={() => canSave && onSave({ id: exercise?.id, name: name.trim(), muscle, equipment, targetReps: [minReps, maxReps], unit, tracksWeight, trackingMode, bumpRule, increment })}
           disabled={!canSave}
           className="flex-1 py-3 rounded-xl text-white font-semibold text-sm disabled:opacity-30 transition"
           style={{ background: "var(--navy-900)" }}
@@ -2097,7 +2143,12 @@ function SessionDetailView({ session, entries, exercises, lastByExercise, onUpda
   if (!session) return null;
   const duration = Math.floor((new Date(session.endedAt) - new Date(session.startedAt)) / 60000);
   const displayEntries = editing ? draftEntries : entries;
-  const totalReps = displayEntries.reduce((acc, e) => acc + e.reps.reduce((a, b) => a + b, 0), 0);
+  // Time-tracked entries don't contribute to a "Total reps" stat — their
+  // numbers are seconds, not reps. Sum reps-mode entries only.
+  const totalReps = displayEntries.reduce((acc, e) => {
+    if (isTimeTracked(exercises?.find(x => x.name === e.exercise))) return acc;
+    return acc + e.reps.reduce((a, b) => a + b, 0);
+  }, 0);
 
   const updateEntry = (entryId, patch) => {
     setDraftEntries(draftEntries.map(e => e.id === entryId ? { ...e, ...patch } : e));
@@ -2250,10 +2301,13 @@ function SessionDetailView({ session, entries, exercises, lastByExercise, onUpda
           {displayEntries.map(entry => {
             const libEx = exercises?.find(e => e.name === entry.exercise);
             const leveledUp = !editing && getProgressionStatus(entry, libEx)?.status === "bump";
+            const suffix = setUnitSuffix(libEx);
+            const formatSets = (reps) => reps.map(r => `${r}${suffix}`).join(" · ");
             return editing ? (
               <EditableEntry
                 key={entry.id}
                 entry={entry}
+                libEx={libEx}
                 onWeightChange={(weight) => updateEntry(entry.id, { weight })}
                 onRepsChange={(setIdx, value) => updateEntryReps(entry.id, setIdx, value)}
                 onNoteChange={(note) => updateEntry(entry.id, { note })}
@@ -2279,10 +2333,10 @@ function SessionDetailView({ session, entries, exercises, lastByExercise, onUpda
                       <div className="text-2xl font-semibold mono text-navy-900">{entry.weight}</div>
                       <div className="text-navy-400 text-xs mono">{entry.unit}</div>
                       <div className="text-navy-300 mono">×</div>
-                      <div className="text-navy-700 mono text-sm">{entry.reps.join(" · ")}</div>
+                      <div className="text-navy-700 mono text-sm">{formatSets(entry.reps)}</div>
                     </>
                   ) : (
-                    <div className="text-2xl font-semibold mono text-navy-900">{entry.reps.join(" · ")}</div>
+                    <div className="text-2xl font-semibold mono text-navy-900">{formatSets(entry.reps)}</div>
                   )}
                 </div>
                 {entry.note && <div className="mt-2 text-xs text-navy-500 italic">"{entry.note}"</div>}
@@ -2348,7 +2402,8 @@ function SessionDetailView({ session, entries, exercises, lastByExercise, onUpda
   );
 }
 
-function EditableEntry({ entry, onWeightChange, onRepsChange, onNoteChange, onAddSet, onRemoveSet, onRemoveEntry }) {
+function EditableEntry({ entry, libEx, onWeightChange, onRepsChange, onNoteChange, onAddSet, onRemoveSet, onRemoveEntry }) {
+  const setNoun = isTimeTracked(libEx) ? "seconds" : "reps";
   const [showNote, setShowNote] = useState(!!entry.note);
   const [confirmRemove, setConfirmRemove] = useState(false);
   const [editingWeight, setEditingWeight] = useState(false);
@@ -2451,7 +2506,7 @@ function EditableEntry({ entry, onWeightChange, onRepsChange, onNoteChange, onAd
                 placeholder="0"
                 className="w-16 surface-2 border border-soft rounded-md px-2 py-1.5 text-sm font-semibold mono text-center text-navy-900 focus:outline-none focus:border-strong"
               />
-              <span className="text-xs text-navy-400">reps</span>
+              <span className="text-xs text-navy-400">{setNoun}</span>
               {entry.reps.length > 1 && (
                 <button onClick={() => onRemoveSet(i)} className="ml-auto text-navy-300 hover:text-red-600 p-1 transition">
                   <X size={12} />
@@ -2751,7 +2806,7 @@ function ExerciseSearchSheet({ exercises, lastByExercise, excluded = [], onPick,
 }
 
 // --- PROFILE ---
-function ProfileView({ profile, sessions, history, onEdit }) {
+function ProfileView({ profile, sessions, history, exercises, onEdit }) {
   const initials = useMemo(() => profile.name.split(" ").map(p => p[0]).slice(0, 2).join("").toUpperCase(), [profile.name]);
 
   const memberFor = useMemo(() => {
@@ -2762,14 +2817,31 @@ function ProfileView({ profile, sessions, history, onEdit }) {
     return `${(days / 365).toFixed(1)} years`;
   }, [profile.memberSince]);
 
-  const totalSets = history.reduce((acc, e) => acc + e.reps.length, 0);
-  const totalReps = history.reduce((acc, e) => acc + e.reps.reduce((a, b) => a + b, 0), 0);
+  // Lookup table so each history entry's tracking mode can be resolved
+  // when computing reps / volume totals. Time-tracked exercises (planks,
+  // hangs) contribute to sets but not to reps or volume.
+  const libByName = useMemo(() => {
+    const m = new Map();
+    (exercises || []).forEach(e => m.set(e.name, e));
+    return m;
+  }, [exercises]);
 
-  // Total volume = sum of (weight × reps), normalized to the user's preferred unit
-  // Each history entry has its own unit (lb or kg) so we convert before summing
+  const totalSets = history.reduce((acc, e) => acc + e.reps.length, 0);
+  const totalReps = useMemo(
+    () => history.reduce((acc, e) => {
+      if (isTimeTracked(libByName.get(e.exercise))) return acc;
+      return acc + e.reps.reduce((a, b) => a + b, 0);
+    }, 0),
+    [history, libByName],
+  );
+
+  // Total volume = sum of (weight × reps), normalized to the user's preferred unit.
+  // Each history entry has its own unit (lb or kg) so we convert before summing.
+  // Time-tracked entries are excluded — their reps array holds seconds.
   const totalVolume = useMemo(() => {
     const targetUnit = profile.units === "imperial" ? "lb" : "kg";
     return history.reduce((acc, entry) => {
+      if (isTimeTracked(libByName.get(entry.exercise))) return acc;
       const entryReps = entry.reps.reduce((a, b) => a + b, 0);
       let weight = entry.weight;
       if (entry.unit !== targetUnit) {
@@ -2777,7 +2849,7 @@ function ProfileView({ profile, sessions, history, onEdit }) {
       }
       return acc + weight * entryReps;
     }, 0);
-  }, [history, profile.units]);
+  }, [history, profile.units, libByName]);
 
   // Format volume nicely: 12,450 lb → "12.5k", 1,234,567 → "1.2M"
   const displayVolume = useMemo(() => {
@@ -2799,7 +2871,7 @@ function ProfileView({ profile, sessions, history, onEdit }) {
   const [copied, setCopied] = useState(false);
 
   const handleExport = () => {
-    const csv = buildCsv(sessions, history);
+    const csv = buildCsv(sessions, history, exercises);
     const filename = csvFilename(profile);
     const downloaded = tryDownloadCsv(csv, filename);
     if (!downloaded) {
@@ -3218,12 +3290,13 @@ function ProfileEditView({ profile, saveError, onSave, onCancel }) {
 }
 
 // --- CSV EXPORT ---
-function buildCsv(sessions, history) {
+function buildCsv(sessions, history, exercises = []) {
   const sessionMap = new Map(sessions.map(s => [s.id, s]));
+  const libByName = new Map((exercises || []).map(e => [e.name, e]));
   const rows = [];
   rows.push([
     "Date", "Time", "Workout name", "Exercise", "Set #",
-    "Weight", "Unit", "Reps", "Note"
+    "Weight", "Unit", "Reps", "Tracking mode", "Note"
   ]);
   const sortedHistory = [...history].sort((a, b) => a.date.localeCompare(b.date));
   sortedHistory.forEach(entry => {
@@ -3236,10 +3309,14 @@ function buildCsv(sessions, history) {
     // as a misleading 0. Unit also drops out since there's nothing to qualify.
     const weightCell = entry.weight > 0 ? entry.weight : "";
     const unitCell = entry.weight > 0 ? entry.unit : "";
+    // Tracking mode comes from the current library — historical entries
+    // don't carry it themselves, so an exercise renamed/deleted since
+    // logging falls back to 'reps'.
+    const mode = trackingModeFor(libByName.get(entry.exercise));
     entry.reps.forEach((reps, i) => {
       rows.push([
         dateStr, timeStr, workoutName, entry.exercise, i + 1,
-        weightCell, unitCell, reps, entry.note || "",
+        weightCell, unitCell, reps, mode, entry.note || "",
       ]);
     });
   });
@@ -3324,6 +3401,7 @@ function ExerciseDetailView({ entries, libEx }) {
   if (entries.length === 0) return null;
   const latest = entries[0];
   const prog = getProgressionStatus(latest, libEx);
+  const suffix = setUnitSuffix(libEx);
 
   return (
     <div className="px-5 pb-20">
@@ -3346,7 +3424,7 @@ function ExerciseDetailView({ entries, libEx }) {
           {latest.reps.map((r, i) => (
             <div key={i} className="flex-1 rounded-lg py-2.5 text-center" style={{ background: "rgba(255,255,255,0.08)" }}>
               <div className="text-[9px] uppercase tracking-wider text-white/50 mono">Set {i + 1}</div>
-              <div className="text-xl font-semibold mt-0.5 mono text-white">{r}</div>
+              <div className="text-xl font-semibold mt-0.5 mono text-white">{r}{suffix}</div>
             </div>
           ))}
         </div>
@@ -3366,11 +3444,13 @@ function ExerciseDetailView({ entries, libEx }) {
         <div className="space-y-2">
           {entries.map(entry => {
             const total = entry.reps.reduce((a, b) => a + b, 0);
+            const setsStr = entry.reps.map(r => `${r}${suffix}`).join(" · ");
             return (
               <div key={entry.id} className="surface border border-soft card-shadow rounded-xl p-3.5">
                 <div className="flex items-center justify-between mb-2">
                   <div className="text-xs text-navy-500 mono">{formatDate(entry.date)}</div>
-                  <div className="text-[10px] text-navy-300 mono">vol {total}</div>
+                  {/* Volume tile is meaningless for time-tracked sets — they're seconds. */}
+                  {!isTimeTracked(libEx) && <div className="text-[10px] text-navy-300 mono">vol {total}</div>}
                 </div>
                 <div className="flex items-baseline gap-2">
                   {entry.weight > 0 ? (
@@ -3378,10 +3458,10 @@ function ExerciseDetailView({ entries, libEx }) {
                       <div className="text-2xl font-semibold mono text-navy-900">{entry.weight}</div>
                       <div className="text-navy-400 text-xs mono">{entry.unit}</div>
                       <div className="text-navy-300 mono">×</div>
-                      <div className="text-navy-700 mono text-sm">{entry.reps.join(" · ")}</div>
+                      <div className="text-navy-700 mono text-sm">{setsStr}</div>
                     </>
                   ) : (
-                    <div className="text-2xl font-semibold mono text-navy-900">{entry.reps.join(" · ")}</div>
+                    <div className="text-2xl font-semibold mono text-navy-900">{setsStr}</div>
                   )}
                 </div>
                 {entry.note && <div className="mt-2 text-xs text-navy-500 italic">"{entry.note}"</div>}
@@ -3562,7 +3642,9 @@ function WorkoutView({ workout, setWorkout, exercises, lastByExercise, onCreateE
 function buildExerciseFromHistory(sourceEntry, libEx) {
   const prog = getProgressionStatus(sourceEntry, libEx);
   const weighted = tracksWeightFor(libEx);
-  // Bodyweight progression happens via reps, not weight, so don't pre-bump the weight value.
+  const mode = trackingModeFor(libEx);
+  // Bodyweight progression happens via reps/seconds, not weight, so don't
+  // pre-bump the weight value.
   const startWeight = (weighted && prog?.status === "bump")
     ? suggestedNextWeight(sourceEntry, libEx)
     : sourceEntry.weight;
@@ -3575,10 +3657,15 @@ function buildExerciseFromHistory(sourceEntry, libEx) {
     targetReps: libEx?.targetReps || sourceEntry.targetReps,
     unit: libEx?.unit || sourceEntry.unit,
     tracksWeight: weighted,
+    trackingMode: mode,
     increment: libEx?.increment ?? (sourceEntry.weight < 50 ? 2.5 : 5),
     reps: [0, 0, 0],
     note: "",
     bumped: weighted && prog?.status === "bump",
+    // Bodyweight time exercises progress by holding longer next session,
+    // not by adding weight. Surface a separate flag so the active view
+    // can show "Holding longer" copy without conflating it with a weight bump.
+    holdLonger: !weighted && mode === "time" && prog?.status === "bump",
   };
 }
 
@@ -3587,13 +3674,20 @@ function buildBlankExercise(name, libEx) {
     exercise: name, weight: 0, lastWeight: null, lastReps: [], lastDate: null,
     targetReps: libEx?.targetReps || [8, 12], unit: libEx?.unit || "lb",
     tracksWeight: tracksWeightFor(libEx),
+    trackingMode: trackingModeFor(libEx),
     increment: libEx?.increment ?? 5,
-    reps: [0, 0, 0], note: "", bumped: false,
+    reps: [0, 0, 0], note: "", bumped: false, holdLonger: false,
   };
 }
 
 function ActiveExercise({ ex, onUpdate, onRemove }) {
   const isBodyweight = ex.tracksWeight === false;
+  const isTime = ex.trackingMode === "time";
+  const setNoun = isTime ? "seconds" : "reps";
+  const setSuffix = isTime ? "s" : "";
+  // +/- step on each set: 5 for time (more useful for plank-class
+  // increments), 1 for reps. Also drives the editor placeholder.
+  const setStep = isTime ? 5 : 1;
   const [showNotes, setShowNotes] = useState(!!ex.note);
   const [restTimer, setRestTimer] = useState(null);
   const [restNow, setRestNow] = useState(Date.now());
@@ -3685,6 +3779,11 @@ function ActiveExercise({ ex, onUpdate, onRemove }) {
             <Flame size={11} /> Bumped from {ex.lastWeight}{ex.unit}
           </div>
         )}
+        {ex.holdLonger && (
+          <div className="mt-1 inline-flex items-center gap-1.5 text-[10px] uppercase tracking-wider mono font-semibold" style={{ color: "var(--accent)" }}>
+            <Flame size={11} /> Holding longer than last time
+          </div>
+        )}
       </div>
 
       {ex.lastDate ? (
@@ -3692,7 +3791,7 @@ function ActiveExercise({ ex, onUpdate, onRemove }) {
           <div className="flex items-center justify-between">
             <div className="text-[10px] uppercase tracking-[0.18em] text-navy-500 mono font-medium">Last time · {formatDate(ex.lastDate)}</div>
             <div className="text-xs mono text-navy-700">
-              {ex.lastWeight > 0 ? `${ex.lastWeight}${ex.unit} × ` : ""}{ex.lastReps.join("/")}
+              {ex.lastWeight > 0 ? `${ex.lastWeight}${ex.unit} × ` : ""}{ex.lastReps.map(r => `${r}${setSuffix}`).join(" · ")}
             </div>
           </div>
         </div>
@@ -3754,7 +3853,7 @@ function ActiveExercise({ ex, onUpdate, onRemove }) {
 
       <div className="mt-4">
         <div className="flex items-center justify-between mb-3">
-          <div className="text-[10px] uppercase tracking-[0.18em] text-navy-500 mono font-medium">Sets · target {ex.targetReps[0]}–{ex.targetReps[1]} reps</div>
+          <div className="text-[10px] uppercase tracking-[0.18em] text-navy-500 mono font-medium">Sets · target {ex.targetReps[0]}–{ex.targetReps[1]} {setNoun}</div>
           {restTimer && (
             <button onClick={() => setRestTimer(null)} className="flex items-center gap-1.5 text-[10px] mono uppercase tracking-wider px-2 py-1 rounded-full font-semibold" style={{ color: "var(--success)", background: "rgba(31, 138, 95, 0.1)" }}>
               <Clock size={10} /> rest {Math.floor(restElapsed/60)}:{String(restElapsed%60).padStart(2,"0")}
@@ -3763,7 +3862,7 @@ function ActiveExercise({ ex, onUpdate, onRemove }) {
         </div>
         <div className="space-y-2">
           {ex.reps.map((r, i) => (
-            <SetRow key={i} setNum={i + 1} reps={r} lastReps={ex.lastReps[i]} targetMax={ex.targetReps[1]} onChange={(v) => setReps(i, v)} onRemove={ex.reps.length > 1 ? () => removeSet(i) : null} />
+            <SetRow key={i} setNum={i + 1} reps={r} lastReps={ex.lastReps[i]} targetMax={ex.targetReps[1]} unitSuffix={setSuffix} step={setStep} onChange={(v) => setReps(i, v)} onRemove={ex.reps.length > 1 ? () => removeSet(i) : null} />
           ))}
         </div>
         <button onClick={addSet} className="mt-2 w-full surface-2 border border-dashed border-strong text-navy-500 py-2.5 rounded-lg text-xs font-medium flex items-center justify-center gap-1.5 hover:bg-navy-50 transition">
@@ -3815,7 +3914,7 @@ function ActiveExercise({ ex, onUpdate, onRemove }) {
   );
 }
 
-function SetRow({ setNum, reps, lastReps, targetMax, onChange, onRemove }) {
+function SetRow({ setNum, reps, lastReps, targetMax, unitSuffix = "", step = 1, onChange, onRemove }) {
   const hitTarget = reps >= targetMax;
   return (
     <div
@@ -3827,16 +3926,16 @@ function SetRow({ setNum, reps, lastReps, targetMax, onChange, onRemove }) {
     >
       <div className="w-9 h-9 rounded-lg flex items-center justify-center text-[10px] uppercase tracking-wider mono shrink-0 font-semibold" style={{ background: "var(--navy-50)", color: "var(--navy-600)" }}>{setNum}</div>
       <div className="flex items-center gap-1.5">
-        <button onClick={() => onChange(reps - 1)} className="w-9 h-9 rounded-lg flex items-center justify-center transition active:scale-95" style={{ background: "var(--navy-100)", color: "var(--navy-700)" }}>
+        <button onClick={() => onChange(reps - step)} className="w-9 h-9 rounded-lg flex items-center justify-center transition active:scale-95" style={{ background: "var(--navy-100)", color: "var(--navy-700)" }}>
           <Minus size={14} />
         </button>
         <input type="number" inputMode="numeric" value={reps || ""} onChange={(e) => onChange(parseInt(e.target.value) || 0)} onFocus={focusToEnd} placeholder={lastReps ? String(lastReps) : "0"} className="w-14 h-9 surface border border-soft rounded-lg text-center text-base font-semibold mono focus:outline-none focus:border-strong text-navy-900" />
-        <button onClick={() => onChange(reps + 1)} className="w-9 h-9 rounded-lg flex items-center justify-center transition active:scale-95" style={{ background: "var(--navy-100)", color: "var(--navy-700)" }}>
+        <button onClick={() => onChange(reps + step)} className="w-9 h-9 rounded-lg flex items-center justify-center transition active:scale-95" style={{ background: "var(--navy-100)", color: "var(--navy-700)" }}>
           <Plus size={14} />
         </button>
       </div>
       <div className="flex-1 flex items-center justify-end gap-2 text-[10px] mono text-navy-400">
-        {lastReps !== undefined && <span>last: {lastReps}</span>}
+        {lastReps !== undefined && <span>last: {lastReps}{unitSuffix}</span>}
         {onRemove && (
           <button onClick={onRemove} className="text-navy-300 hover:text-red-600 p-1 transition">
             <X size={12} />
