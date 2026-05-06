@@ -4,6 +4,7 @@ import { focusToEnd } from "../lib/inputs";
 
 const GENDER_OPTIONS = ["Male", "Female", "Non-binary", "Prefer not to say"];
 const EXPERIENCE_OPTIONS = ["Beginner", "Intermediate", "Advanced"];
+const GOAL_OPTIONS = ["Strength", "Hypertrophy", "Endurance", "Weight loss", "General fitness"];
 
 // Shown once for fresh accounts to capture optional profile context. None
 // of the fields are required to proceed — Skip and Continue both flip
@@ -20,6 +21,7 @@ export function OnboardingScreen({ onComplete, saveError }) {
   const [gender, setGender] = useState(null);
   const [homeGym, setHomeGym] = useState("");
   const [experienceLevel, setExperienceLevel] = useState(null);
+  const [goal, setGoal] = useState(null);
   const [weeklyWorkoutGoal, setWeeklyWorkoutGoal] = useState(null);
   const [heightFeet, setHeightFeet] = useState("");
   const [heightInches, setHeightInches] = useState("");
@@ -58,6 +60,7 @@ export function OnboardingScreen({ onComplete, saveError }) {
         weightKg: computedWeightKg(),
         gender,
         homeGym: homeGym.trim(),
+        goal,
         experienceLevel,
         weeklyWorkoutGoal,
       });
@@ -144,6 +147,14 @@ export function OnboardingScreen({ onComplete, saveError }) {
             placeholder="e.g. Synergy Health & Sports Performance"
             className="w-full surface-2 border border-soft rounded-xl px-4 py-3 text-base focus:outline-none focus:border-strong text-navy-900"
           />
+        </Field>
+
+        <Field label="Fitness goal">
+          <div className="flex flex-wrap gap-1.5">
+            {GOAL_OPTIONS.map(g => (
+              <Chip key={g} active={goal === g} onClick={() => setGoal(g)}>{g}</Chip>
+            ))}
+          </div>
         </Field>
 
         <Field label="Experience level">

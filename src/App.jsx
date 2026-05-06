@@ -10,6 +10,7 @@ import { useLocalStorage } from "./hooks/useLocalStorage";
 import { useSessionState, signOut } from "./lib/auth";
 import { supabase } from "./lib/supabase";
 import { focusToEnd } from "./lib/inputs";
+import { ageFromDob, formatDateOfBirth, MIN_AGE } from "./lib/dob";
 import { AuthGate } from "./auth/AuthGate";
 import { SetNewPasswordScreen } from "./auth/SetNewPasswordScreen";
 import { OnboardingScreen } from "./auth/OnboardingScreen";
@@ -812,6 +813,27 @@ export default function App() {
         if (historyRes.error) throw historyRes.error;
 
         const profileObj = mapRowToProfile(profileRes.data, session.user.email);
+
+        // The signup form puts date_of_birth into auth user_metadata, but
+        // the handle_new_user trigger may not propagate it onto the
+        // profiles row. If the row's DOB is missing while metadata has it,
+        // sync the value here so it survives a refresh and shows up
+        // correctly in the profile view. Failure is non-fatal — the user
+        // can re-enter DOB from profile edit.
+        const metaDob = session.user.user_metadata?.date_of_birth;
+        if (!profileObj.dateOfBirth && metaDob) {
+          const { error: dobErr } = await supabase
+            .from("profiles")
+            .update({ date_of_birth: metaDob })
+            .eq("id", userId);
+          if (cancelled) return;
+          if (!dobErr) {
+            profileObj.dateOfBirth = metaDob;
+          } else {
+            console.warn("[profiles] DOB backfill failed:", dobErr);
+          }
+        }
+
         let exercisesList = (exRes.data || []).map(mapRowToExercise);
         let plansList = (plansRes.data || []).map(mapRowToPlan);
         const sessionsList = (sessionsRes.data || []).map(mapRowToSession);
@@ -2843,10 +2865,11 @@ function ProfileView({ profile, sessions, history, onEdit }) {
         <div className="text-[10px] uppercase tracking-[0.18em] text-navy-500 mono font-medium mb-3">About</div>
         <div className="surface border border-soft card-shadow rounded-2xl divide-y" style={{ borderColor: "var(--border)" }}>
           <DetailRow icon={Mail} label="Email" value={profile.email} />
-          <DetailRow icon={Calendar} label="Date of birth" value={profile.dateOfBirth ? new Date(profile.dateOfBirth).toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" }) : "—"} />
+          <DetailRow icon={Calendar} label="Date of birth" value={formatDateOfBirth(profile.dateOfBirth)} />
           <DetailRow icon={User} label="Gender" value={profile.gender || "—"} />
           <DetailRow icon={Dumbbell} label="Home gym" value={profile.homeGym?.trim() || "—"} />
           <DetailRow icon={Target} label="Goal" value={profile.goal || "—"} />
+          <DetailRow icon={TrendingUp} label="Experience" value={profile.experienceLevel || "—"} />
           <DetailRow icon={CalendarCheck} label="Weekly target" value={profile.weeklyWorkoutGoal != null ? `${profile.weeklyWorkoutGoal} workouts per week` : "—"} />
           <DetailRow icon={Ruler} label="Units" value={profile.units === "imperial" ? "Imperial (lb, ft)" : "Metric (kg, cm)"} />
         </div>
@@ -2938,9 +2961,30 @@ function DetailRow({ icon: Icon, label, value }) {
 
 function ProfileEditView({ profile, saveError, onSave, onCancel }) {
   const [draft, setDraft] = useState({ ...profile });
+  const [validationError, setValidationError] = useState(null);
   const fileInputRef = useRef(null);
 
   const update = (patch) => setDraft({ ...draft, ...patch });
+
+  const handleSave = () => {
+    // Mirror the signup-time age check so users can't edit themselves
+    // under the minimum age. Only validates when a DOB is present —
+    // empty DOB is allowed (the field is optional after the initial
+    // signup write).
+    if (draft.dateOfBirth) {
+      const age = ageFromDob(draft.dateOfBirth);
+      if (age != null && age < MIN_AGE) {
+        setValidationError(`You must be at least ${MIN_AGE} years old.`);
+        return;
+      }
+    }
+    setValidationError(null);
+    onSave(draft);
+  };
+
+  // Either local validation error or server save error fills the banner;
+  // local validation wins when both are set since it's immediate feedback.
+  const bannerError = validationError || saveError;
 
   const handlePhotoUpload = (e) => {
     const file = e.target.files?.[0];
@@ -3039,12 +3083,12 @@ function ProfileEditView({ profile, saveError, onSave, onCancel }) {
         </div>
       </div>
 
-      {saveError && (
+      {bannerError && (
         <div
           className="mt-5 rounded-xl px-3 py-2.5 text-xs leading-relaxed border"
           style={{ background: "rgba(220, 38, 38, 0.05)", borderColor: "rgba(220, 38, 38, 0.2)", color: "#dc2626" }}
         >
-          {saveError}
+          {bannerError}
         </div>
       )}
 
@@ -3144,7 +3188,7 @@ function ProfileEditView({ profile, saveError, onSave, onCancel }) {
       <BottomBar>
         <button onClick={onCancel} className="flex-1 py-3 rounded-xl border border-soft text-navy-700 font-medium text-sm">Cancel</button>
         <button
-          onClick={() => canSave && onSave(draft)}
+          onClick={() => canSave && handleSave()}
           disabled={!canSave}
           className="flex-1 py-3 rounded-xl text-white font-semibold text-sm disabled:opacity-30 transition"
           style={{ background: "var(--navy-900)" }}

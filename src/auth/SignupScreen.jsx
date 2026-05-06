@@ -1,21 +1,7 @@
 import React, { useState } from "react";
 import { supabase } from "../lib/supabase";
 import { AuthLayout, AuthField, AuthError } from "./AuthLayout";
-
-// Minimum age for account creation. Below this we refuse client-side; the
-// Supabase trigger may also enforce this server-side eventually.
-const MIN_AGE = 13;
-
-function ageFromDob(dob) {
-  if (!dob) return null;
-  const d = new Date(dob);
-  if (isNaN(d.getTime())) return null;
-  const today = new Date();
-  let age = today.getFullYear() - d.getFullYear();
-  const monthDelta = today.getMonth() - d.getMonth();
-  if (monthDelta < 0 || (monthDelta === 0 && today.getDate() < d.getDate())) age--;
-  return age;
-}
+import { MIN_AGE, ageFromDob } from "../lib/dob";
 
 export function SignupScreen({ onSwitchToLogin }) {
   const [email, setEmail] = useState("");
