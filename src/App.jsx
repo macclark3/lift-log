@@ -200,6 +200,88 @@ function mapRowToProfile(row, fallbackEmail) {
   };
 }
 
+// Exercises and plans use the same camelCase ↔ snake_case dance as profile.
+// Mappers are defensive against missing columns / nulls so the app still
+// renders cleanly if the schema ever drifts.
+
+function mapRowToExercise(row) {
+  return {
+    id: row.id,
+    name: row.name || "",
+    targetReps: [row.target_reps_min ?? 0, row.target_reps_max ?? 0],
+    unit: row.unit || "lb",
+    muscle: row.muscle || null,
+    equipment: row.equipment || null,
+    bumpRule: row.bump_rule || "all",
+    increment: row.increment ?? 5,
+    // Default true matches the JS-side convention: undefined / null means
+    // "weighted exercise" unless the row explicitly sets tracks_weight=false.
+    tracksWeight: row.tracks_weight !== false,
+  };
+}
+
+// Build a row for INSERT (needs user_id, no id — Supabase generates it).
+function exerciseToDbRow(ex, userId) {
+  return {
+    user_id: userId,
+    name: ex.name || null,
+    target_reps_min: ex.targetReps?.[0] ?? null,
+    target_reps_max: ex.targetReps?.[1] ?? null,
+    unit: ex.unit ?? null,
+    muscle: ex.muscle ?? null,
+    equipment: ex.equipment ?? null,
+    bump_rule: ex.bumpRule ?? null,
+    increment: ex.increment ?? null,
+    tracks_weight: ex.tracksWeight !== false,
+    visibility: "private",
+  };
+}
+
+// Build an UPDATE patch — only fields actually present in the input go through
+// so we don't accidentally null out columns the form didn't touch.
+function exerciseToDbPatch(patch) {
+  const out = {};
+  if ("name" in patch) out.name = patch.name || null;
+  if ("targetReps" in patch) {
+    out.target_reps_min = patch.targetReps?.[0] ?? null;
+    out.target_reps_max = patch.targetReps?.[1] ?? null;
+  }
+  if ("unit" in patch) out.unit = patch.unit ?? null;
+  if ("muscle" in patch) out.muscle = patch.muscle ?? null;
+  if ("equipment" in patch) out.equipment = patch.equipment ?? null;
+  if ("bumpRule" in patch) out.bump_rule = patch.bumpRule ?? null;
+  if ("increment" in patch) out.increment = patch.increment ?? null;
+  if ("tracksWeight" in patch) out.tracks_weight = patch.tracksWeight !== false;
+  return out;
+}
+
+function mapRowToPlan(row) {
+  return {
+    id: row.id,
+    name: row.name || "",
+    description: row.description || "",
+    exercises: row.exercises || [],
+  };
+}
+
+function planToDbRow(plan, userId) {
+  return {
+    user_id: userId,
+    name: plan.name || null,
+    description: plan.description || null,
+    exercises: plan.exercises || [],
+    visibility: "private",
+  };
+}
+
+function planToDbPatch(patch) {
+  const out = {};
+  if ("name" in patch) out.name = patch.name || null;
+  if ("description" in patch) out.description = patch.description || null;
+  if ("exercises" in patch) out.exercises = patch.exercises || [];
+  return out;
+}
+
 // Inverse mapping: turn a camelCase patch into the snake_case payload for an
 // UPDATE. Only writable fields are forwarded (id and email are managed by
 // Supabase auth + trigger; memberSince is set at signup and never edited).
@@ -224,25 +306,40 @@ function profileToDbPatch(patch) {
 export default function App() {
   const [history, setHistory] = useLocalStorage("history", seedHistory);
   const [sessions, setSessions] = useLocalStorage("sessions", seedSessions);
-  const [plans, setPlans] = useLocalStorage("plans", seedPlans);
-  const [exercises, setExercises] = useLocalStorage("exercises", seedExercises);
-  // Profile is now Supabase-backed: fetched on session arrival, written on
-  // edit. localStorage no longer holds the source of truth (the orphaned
-  // liftlog:profile key from previous versions is left in place but ignored).
+  // Library data is Supabase-backed as of migration 2: exercises and plans
+  // are read in the initial fetch and written through the async helpers
+  // below. localStorage keys (liftlog:exercises, liftlog:plans) are no
+  // longer read or written; old values, if any, are orphaned.
+  const [exercises, setExercises] = useState([]);
+  const [plans, setPlans] = useState([]);
+  // Profile is also Supabase-backed (migration 1).
   const [profile, setProfile] = useState(null);
-  const [profileError, setProfileError] = useState(null);
+  // Save errors surface inline in their respective forms. Cleared on view
+  // navigation (see popView/pushView/resetView below) so a stale error
+  // doesn't show when the user opens the next form.
   const [profileSaveError, setProfileSaveError] = useState(null);
-  // Bumped to retry the profile fetch from the error screen.
-  const [profileFetchTick, setProfileFetchTick] = useState(0);
+  const [librarySaveError, setLibrarySaveError] = useState(null);
+  // Single error + retry tick covering the initial parallel fetch of
+  // profile/exercises/plans. If anything fails we render ProfileLoadError
+  // and the retry refetches all three together.
+  const [initialDataError, setInitialDataError] = useState(null);
+  const [initialDataLoaded, setInitialDataLoaded] = useState(false);
+  const [initialDataFetchTick, setInitialDataFetchTick] = useState(0);
   const [tab, setTab] = useState("home");
   // Navigation is a stack: each pushView appends, popView trims the last entry,
   // resetView clears it. The current view is the top of the stack (or null when
   // the user is sitting on a top-level tab).
   const [viewStack, setViewStack] = useState([]);
   const view = viewStack[viewStack.length - 1] || null;
-  const pushView = (v) => setViewStack(stack => [...stack, v]);
-  const popView = () => setViewStack(stack => stack.slice(0, -1));
-  const resetView = () => setViewStack([]);
+  // Navigation also clears transient form save errors so a stale banner
+  // doesn't follow the user into their next form mount.
+  const clearSaveErrors = () => {
+    setProfileSaveError(null);
+    setLibrarySaveError(null);
+  };
+  const pushView = (v) => { setViewStack(stack => [...stack, v]); clearSaveErrors(); };
+  const popView = () => { setViewStack(stack => stack.slice(0, -1)); clearSaveErrors(); };
+  const resetView = () => { setViewStack([]); clearSaveErrors(); };
   const [activeWorkout, setActiveWorkout] = useLocalStorage("activeWorkout", null);
 
   const lastByExercise = useMemo(() => {
@@ -259,18 +356,62 @@ export default function App() {
     return [...sessions].sort((a, b) => b.startedAt.localeCompare(a.startedAt));
   }, [sessions]);
 
-  const addExerciseToLibrary = (newEx) => {
-    const ex = { id: `ex-${Date.now()}`, ...newEx };
-    setExercises([...exercises, ex]);
-    return ex;
+  // Library writes are pessimistic on create (we wait for the inserted row
+  // to come back so we can use the server-generated id) and optimistic on
+  // update / delete (rolled back on failure). Errors surface via
+  // librarySaveError; the active form renders an inline banner.
+
+  const addExerciseToLibrary = async (newEx) => {
+    if (!session) return null;
+    setLibrarySaveError(null);
+    const dbRow = exerciseToDbRow(newEx, session.user.id);
+    const { data, error } = await supabase
+      .from("exercises")
+      .insert([dbRow])
+      .select()
+      .single();
+    if (error) {
+      setLibrarySaveError(error.message || "Couldn't save the exercise. Check your connection and try again.");
+      return null;
+    }
+    const created = mapRowToExercise(data);
+    setExercises(prev => [...prev, created]);
+    return created;
   };
 
-  const updateExerciseInLibrary = (id, patch) => {
-    setExercises(exercises.map(e => e.id === id ? { ...e, ...patch } : e));
+  const updateExerciseInLibrary = async (id, patch) => {
+    if (!session) return false;
+    setLibrarySaveError(null);
+    const previous = exercises;
+    setExercises(prev => prev.map(e => e.id === id ? { ...e, ...patch } : e));
+    const dbPatch = exerciseToDbPatch(patch);
+    const { error } = await supabase
+      .from("exercises")
+      .update(dbPatch)
+      .eq("id", id);
+    if (error) {
+      setExercises(previous);
+      setLibrarySaveError(error.message || "Couldn't update the exercise. Check your connection and try again.");
+      return false;
+    }
+    return true;
   };
 
-  const deleteExerciseFromLibrary = (id) => {
-    setExercises(exercises.filter(e => e.id !== id));
+  const deleteExerciseFromLibrary = async (id) => {
+    if (!session) return false;
+    setLibrarySaveError(null);
+    const previous = exercises;
+    setExercises(prev => prev.filter(e => e.id !== id));
+    const { error } = await supabase
+      .from("exercises")
+      .delete()
+      .eq("id", id);
+    if (error) {
+      setExercises(previous);
+      setLibrarySaveError(error.message || "Couldn't delete the exercise. Check your connection and try again.");
+      return false;
+    }
+    return true;
   };
 
   const startWorkout = (planExercises = null) => {
@@ -351,12 +492,56 @@ export default function App() {
     popView();
   };
 
-  const savePlan = (plan) => {
-    if (plan.id) setPlans(plans.map(p => p.id === plan.id ? plan : p));
-    else setPlans([...plans, { ...plan, id: `p${Date.now()}` }]);
-    popView();
+  const savePlan = async (plan) => {
+    if (!session) return false;
+    setLibrarySaveError(null);
+    if (plan.id) {
+      // Update — optimistic with rollback.
+      const previous = plans;
+      setPlans(prev => prev.map(p => p.id === plan.id ? { ...p, ...plan } : p));
+      const dbPatch = planToDbPatch(plan);
+      const { error } = await supabase
+        .from("plans")
+        .update(dbPatch)
+        .eq("id", plan.id);
+      if (error) {
+        setPlans(previous);
+        setLibrarySaveError(error.message || "Couldn't save the plan. Check your connection and try again.");
+        return false;
+      }
+      return true;
+    }
+    // Create — pessimistic, use returned row to capture the server-generated id.
+    const dbRow = planToDbRow(plan, session.user.id);
+    const { data, error } = await supabase
+      .from("plans")
+      .insert([dbRow])
+      .select()
+      .single();
+    if (error) {
+      setLibrarySaveError(error.message || "Couldn't save the plan. Check your connection and try again.");
+      return false;
+    }
+    setPlans(prev => [...prev, mapRowToPlan(data)]);
+    return true;
   };
-  const deletePlan = (id) => { setPlans(plans.filter(p => p.id !== id)); popView(); };
+
+  const deletePlan = async (id) => {
+    if (!session) return false;
+    setLibrarySaveError(null);
+    const previous = plans;
+    setPlans(prev => prev.filter(p => p.id !== id));
+    const { error } = await supabase
+      .from("plans")
+      .delete()
+      .eq("id", id);
+    if (error) {
+      setPlans(previous);
+      setLibrarySaveError(error.message || "Couldn't delete the plan. Check your connection and try again.");
+      return false;
+    }
+    return true;
+  };
 
   // The workout view is foregrounded whenever an active workout exists and
   // hasn't been minimized. It's mounted (but display:none'd) when minimized
@@ -393,11 +578,16 @@ export default function App() {
       setViewStack([]);
     } else if (!session && wasSignedIn) {
       setActiveWorkout(null);
-      // Profile state is per-session — drop it so the next sign-in fetches
-      // fresh rather than rendering with stale data from the previous user.
+      // Per-session state — drop everything Supabase-backed so the next
+      // sign-in fetches fresh rather than rendering with stale data from
+      // the previous user.
       setProfile(null);
-      setProfileError(null);
+      setExercises([]);
+      setPlans([]);
+      setInitialDataLoaded(false);
+      setInitialDataError(null);
       setProfileSaveError(null);
+      setLibrarySaveError(null);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [session]);
@@ -421,42 +611,77 @@ export default function App() {
     if (!session || userInitialized) return;
     setHistory([]);
     setSessions([]);
-    setPlans(seedPlans);
-    setExercises(seedExercises);
     setActiveWorkout(null);
-    // Profile is loaded from Supabase by the fetch effect below — the
-    // handle_new_user trigger creates the row at signup, we don't write a
-    // local placeholder anymore.
+    // Profile, exercises, and plans are now Supabase-backed — the fetch
+    // effect below loads (and seeds, for first-time users) all of them.
     localStorage.setItem(userInitKey, "1");
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [session, userInitialized]);
 
-  // Fetch the user's profile row from Supabase whenever the userId changes
-  // (initial session restore, sign-in, or a manual retry via profileFetchTick).
-  // Errors surface via profileError, which the gate uses to render
-  // ProfileLoadError instead of leaving the user on a permanent spinner.
+  // Single fetch effect that loads everything the app needs to render the
+  // home screen: profile, exercises, plans. All three run in parallel.
+  // If exercises is empty (first launch ever for this user) we batch-insert
+  // the seed library + plans and use the returned rows as state. Anything
+  // failing surfaces via initialDataError → ProfileLoadError gate, with a
+  // retry that bumps initialDataFetchTick.
   useEffect(() => {
     if (!session) return;
     let cancelled = false;
-    setProfileError(null);
+    setInitialDataError(null);
+    setInitialDataLoaded(false);
+
     (async () => {
-      const { data, error } = await supabase
-        .from("profiles")
-        .select("*")
-        .eq("id", session.user.id)
-        .single();
-      if (cancelled) return;
-      if (error) {
-        setProfileError(error.message || "Couldn't load your profile. Check your connection and try again.");
-        return;
+      try {
+        const userId = session.user.id;
+        const [profileRes, exRes, plansRes] = await Promise.all([
+          supabase.from("profiles").select("*").eq("id", userId).single(),
+          supabase.from("exercises").select("*").eq("user_id", userId).order("created_at", { ascending: true }),
+          supabase.from("plans").select("*").eq("user_id", userId).order("created_at", { ascending: true }),
+        ]);
+        if (cancelled) return;
+        if (profileRes.error) throw profileRes.error;
+        if (exRes.error) throw exRes.error;
+        if (plansRes.error) throw plansRes.error;
+
+        const profileObj = mapRowToProfile(profileRes.data, session.user.email);
+        let exercisesList = (exRes.data || []).map(mapRowToExercise);
+        let plansList = (plansRes.data || []).map(mapRowToPlan);
+
+        // Empty exercises = first-ever launch for this user; seed the library
+        // + plans from the local seed arrays. Plans are seeded only if they
+        // are also empty so a user who deliberately deleted all plans doesn't
+        // get them back.
+        if (exercisesList.length === 0) {
+          const seededExRows = seedExercises.map(e => exerciseToDbRow(e, userId));
+          const exInsert = await supabase.from("exercises").insert(seededExRows).select();
+          if (cancelled) return;
+          if (exInsert.error) throw exInsert.error;
+          exercisesList = (exInsert.data || []).map(mapRowToExercise);
+
+          if (plansList.length === 0) {
+            const seededPlanRows = seedPlans.map(p => planToDbRow(p, userId));
+            const planInsert = await supabase.from("plans").insert(seededPlanRows).select();
+            if (cancelled) return;
+            if (planInsert.error) throw planInsert.error;
+            plansList = (planInsert.data || []).map(mapRowToPlan);
+          }
+        }
+
+        setProfile(profileObj);
+        setExercises(exercisesList);
+        setPlans(plansList);
+        setInitialDataLoaded(true);
+      } catch (err) {
+        if (cancelled) return;
+        setInitialDataError(err.message || "Couldn't load your data. Check your connection and try again.");
       }
-      setProfile(mapRowToProfile(data, session.user.email));
     })();
+
     return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [session?.user.id, profileFetchTick]);
+  }, [session?.user.id, initialDataFetchTick]);
 
-  const retryProfileFetch = () => setProfileFetchTick(t => t + 1);
+  const retryInitialDataFetch = () => setInitialDataFetchTick(t => t + 1);
 
   // Optimistic write with rollback. The local profile is updated immediately
   // so the UI feels responsive; if Supabase rejects the update we revert and
@@ -502,8 +727,8 @@ export default function App() {
   if (authLoading) authShell = <AuthLoading />;
   else if (isPasswordRecovery) authShell = <SetNewPasswordScreen />;
   else if (!session) authShell = <AuthGate />;
-  else if (profileError) authShell = <ProfileLoadError onRetry={retryProfileFetch} />;
-  else if (!profile) authShell = <AuthLoading />;
+  else if (initialDataError) authShell = <ProfileLoadError onRetry={retryInitialDataFetch} />;
+  else if (!initialDataLoaded) authShell = <AuthLoading />;
   else if (!userInitialized) authShell = <AuthLoading />;
   else if (!userOnboarded) {
     authShell = <OnboardingScreen onComplete={finishOnboarding} saveError={profileSaveError} />;
@@ -612,7 +837,7 @@ export default function App() {
             display:none when minimized rather than unmounted. */}
         {activeWorkout && (
           <div style={{ display: activeWorkout.minimized ? "none" : "block" }}>
-            <WorkoutView workout={activeWorkout} setWorkout={setActiveWorkout} exercises={exercises} lastByExercise={lastByExercise} onCreateExercise={addExerciseToLibrary} onFinish={finishWorkout} />
+            <WorkoutView workout={activeWorkout} setWorkout={setActiveWorkout} exercises={exercises} lastByExercise={lastByExercise} onCreateExercise={addExerciseToLibrary} onFinish={finishWorkout} librarySaveError={librarySaveError} />
           </div>
         )}
 
@@ -666,10 +891,26 @@ export default function App() {
                 onUpdate={updateSession}
                 onDelete={deleteSession}
                 onCreateExercise={addExerciseToLibrary}
+                librarySaveError={librarySaveError}
               />
             )}
             {view?.type === "plan-edit" && (
-              <PlanEditView plan={view.id ? plans.find(p => p.id === view.id) : null} exercises={exercises} lastByExercise={lastByExercise} onSave={savePlan} onDelete={deletePlan} onCancel={popView} onCreateExercise={addExerciseToLibrary} />
+              <PlanEditView
+                plan={view.id ? plans.find(p => p.id === view.id) : null}
+                exercises={exercises}
+                lastByExercise={lastByExercise}
+                saveError={librarySaveError}
+                onSave={async (p) => {
+                  const ok = await savePlan(p);
+                  if (ok) popView();
+                }}
+                onDelete={async (id) => {
+                  const ok = await deletePlan(id);
+                  if (ok) popView();
+                }}
+                onCancel={popView}
+                onCreateExercise={addExerciseToLibrary}
+              />
             )}
             {view?.type === "library" && (
               <LibraryView exercises={exercises} lastByExercise={lastByExercise} onCreate={() => pushView({ type: "exercise-edit", id: null })} onEdit={(id) => pushView({ type: "exercise-edit", id })} onSelect={(name) => pushView({ type: "exercise", name })} />
@@ -678,12 +919,17 @@ export default function App() {
               <ExerciseEditView
                 exercise={view.id ? exercises.find(e => e.id === view.id) : null}
                 initialName={view.initialName}
-                onSave={(ex) => {
-                  if (ex.id) updateExerciseInLibrary(ex.id, ex);
-                  else addExerciseToLibrary(ex);
-                  popView();
+                saveError={librarySaveError}
+                onSave={async (ex) => {
+                  let ok;
+                  if (ex.id) ok = await updateExerciseInLibrary(ex.id, ex);
+                  else ok = !!(await addExerciseToLibrary(ex));
+                  if (ok) popView();
                 }}
-                onDelete={(id) => { deleteExerciseFromLibrary(id); popView(); }}
+                onDelete={async (id) => {
+                  const ok = await deleteExerciseFromLibrary(id);
+                  if (ok) popView();
+                }}
                 onCancel={popView}
               />
             )}
@@ -1256,7 +1502,7 @@ function FilterChip({ active, onClick, children }) {
 }
 
 // --- EXERCISE EDIT ---
-function ExerciseEditView({ exercise, initialName, onSave, onDelete, onCancel }) {
+function ExerciseEditView({ exercise, initialName, saveError, onSave, onDelete, onCancel }) {
   const [name, setName] = useState(exercise?.name || initialName || "");
   const [muscle, setMuscle] = useState(exercise?.muscle || "Chest");
   const [equipment, setEquipment] = useState(exercise?.equipment || "Barbell");
@@ -1277,6 +1523,14 @@ function ExerciseEditView({ exercise, initialName, onSave, onDelete, onCancel })
 
   return (
     <div className="px-5 pb-32">
+      {saveError && (
+        <div
+          className="mt-5 rounded-xl px-3 py-2.5 text-xs leading-relaxed border"
+          style={{ background: "rgba(220, 38, 38, 0.05)", borderColor: "rgba(220, 38, 38, 0.2)", color: "#dc2626" }}
+        >
+          {saveError}
+        </div>
+      )}
       <div className="mt-5 space-y-4">
         <Field label="Exercise name">
           <input value={name} onChange={e => setName(e.target.value)} placeholder="e.g. Romanian Deadlift" autoFocus={!exercise} className="w-full surface border border-soft rounded-xl px-4 py-3 text-base focus:outline-none focus:border-strong text-navy-900" />
@@ -1421,7 +1675,7 @@ function ExerciseEditView({ exercise, initialName, onSave, onDelete, onCancel })
 // a higher z-index than the search sheet (z-30) so it stacks above and can
 // dismiss back to it cleanly. Renders its own mini-header since it's outside
 // the routed Header's nav stack.
-function ExerciseEditModal({ initialName, onSave, onCancel }) {
+function ExerciseEditModal({ initialName, saveError, onSave, onCancel }) {
   const displayName = (initialName || "").trim() || "Untitled";
   return (
     <div className="fixed inset-0 z-40 overflow-y-auto" style={{ background: "var(--bg)" }}>
@@ -1441,6 +1695,7 @@ function ExerciseEditModal({ initialName, onSave, onCancel }) {
         </div>
         <ExerciseEditView
           initialName={initialName}
+          saveError={saveError}
           onSave={onSave}
           onCancel={onCancel}
         />
@@ -1606,7 +1861,7 @@ function StatTile({ label, value, unit }) {
   );
 }
 
-function SessionDetailView({ session, entries, exercises, lastByExercise, onUpdate, onDelete, onCreateExercise }) {
+function SessionDetailView({ session, entries, exercises, lastByExercise, onUpdate, onDelete, onCreateExercise, librarySaveError }) {
   const [editing, setEditing] = useState(false);
   const [draftName, setDraftName] = useState(session?.name || "");
   const [draftEntries, setDraftEntries] = useState(entries);
@@ -1691,8 +1946,9 @@ function SessionDetailView({ session, entries, exercises, lastByExercise, onUpda
   // until Save. On Save, the new exercise is added to the library AND a new
   // draft entry is appended to the session.
   const handleCreateNewFromPicker = (newName) => setPendingNewExerciseName(newName);
-  const handleSaveNewExerciseFromPicker = (payload) => {
-    const created = onCreateExercise(payload);
+  const handleSaveNewExerciseFromPicker = async (payload) => {
+    const created = await onCreateExercise(payload);
+    if (!created) return; // librarySaveError surfaces in the modal
     setDraftEntries([...draftEntries, buildDraftEntry(created.name, created)]);
     setPendingNewExerciseName(null);
     setShowPicker(false);
@@ -1843,6 +2099,7 @@ function SessionDetailView({ session, entries, exercises, lastByExercise, onUpda
       {pendingNewExerciseName !== null && (
         <ExerciseEditModal
           initialName={pendingNewExerciseName}
+          saveError={librarySaveError}
           onSave={handleSaveNewExerciseFromPicker}
           onCancel={() => setPendingNewExerciseName(null)}
         />
@@ -2079,7 +2336,7 @@ function PlansView({ plans, onCreate, onEdit, onUse }) {
   );
 }
 
-function PlanEditView({ plan, exercises, lastByExercise, onSave, onDelete, onCancel, onCreateExercise }) {
+function PlanEditView({ plan, exercises, lastByExercise, saveError, onSave, onDelete, onCancel, onCreateExercise }) {
   const [name, setName] = useState(plan?.name || "");
   const [description, setDescription] = useState(plan?.description || "");
   const [planExercises, setPlanExercises] = useState(plan?.exercises || []);
@@ -2099,8 +2356,9 @@ function PlanEditView({ plan, exercises, lastByExercise, onSave, onDelete, onCan
   const addExisting = (name) => { setPlanExercises([...planExercises, name]); setShowPicker(false); };
   // Open the editor modal pre-filled with the typed name; defer creation until Save.
   const handleCreateNew = (newName) => setPendingNewExerciseName(newName);
-  const handleSaveNewExercise = (payload) => {
-    const created = onCreateExercise(payload);
+  const handleSaveNewExercise = async (payload) => {
+    const created = await onCreateExercise(payload);
+    if (!created) return; // librarySaveError surfaces in the modal
     setPlanExercises([...planExercises, created.name]);
     setPendingNewExerciseName(null);
     setShowPicker(false);
@@ -2116,9 +2374,19 @@ function PlanEditView({ plan, exercises, lastByExercise, onSave, onDelete, onCan
       {pendingNewExerciseName !== null && (
         <ExerciseEditModal
           initialName={pendingNewExerciseName}
+          saveError={saveError}
           onSave={handleSaveNewExercise}
           onCancel={() => setPendingNewExerciseName(null)}
         />
+      )}
+
+      {saveError && pendingNewExerciseName === null && (
+        <div
+          className="mt-5 rounded-xl px-3 py-2.5 text-xs leading-relaxed border"
+          style={{ background: "rgba(220, 38, 38, 0.05)", borderColor: "rgba(220, 38, 38, 0.2)", color: "#dc2626" }}
+        >
+          {saveError}
+        </div>
       )}
 
       <div className="mt-5 space-y-3">
@@ -2886,7 +3154,7 @@ function ExerciseDetailView({ entries, libEx }) {
 }
 
 // --- ACTIVE WORKOUT ---
-function WorkoutView({ workout, setWorkout, exercises, lastByExercise, onCreateExercise, onFinish }) {
+function WorkoutView({ workout, setWorkout, exercises, lastByExercise, onCreateExercise, onFinish, librarySaveError }) {
   const [showPicker, setShowPicker] = useState(workout.exercises.length === 0 && workout.planQueue.length === 0);
   const [activeIdx, setActiveIdx] = useState(Math.max(0, workout.exercises.length - 1));
   const [showFinish, setShowFinish] = useState(false);
@@ -2920,8 +3188,9 @@ function WorkoutView({ workout, setWorkout, exercises, lastByExercise, onCreateE
   // Open the editor modal pre-filled with the typed name; defer creation until Save.
   // addExercise itself closes the picker, so we only need to clear the modal state.
   const handleCreateNew = (newName) => setPendingNewExerciseName(newName);
-  const handleSaveNewExercise = (payload) => {
-    const created = onCreateExercise(payload);
+  const handleSaveNewExercise = async (payload) => {
+    const created = await onCreateExercise(payload);
+    if (!created) return; // librarySaveError surfaces in the modal
     addExercise(created.name);
     setPendingNewExerciseName(null);
   };
@@ -2952,6 +3221,7 @@ function WorkoutView({ workout, setWorkout, exercises, lastByExercise, onCreateE
         {pendingNewExerciseName !== null && (
           <ExerciseEditModal
             initialName={pendingNewExerciseName}
+            saveError={librarySaveError}
             onSave={handleSaveNewExercise}
             onCancel={() => setPendingNewExerciseName(null)}
           />
