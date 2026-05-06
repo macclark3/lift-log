@@ -152,6 +152,12 @@ These are real product directions Mac is interested in but explicitly deferred. 
 
 - **Apple Health integration** — listed elsewhere; reiterating here that this requires a Capacitor or native iOS wrapper, not just PWA. Don't try to bolt it on inside the PWA.
 
+## Known limitations (not blocking)
+
+- **DOB backfill on every sign-in.** The migration that populates DOB from auth metadata into the profiles table runs on every fetch where DOB is null. If a user deliberately clears their DOB and signs back in, it will be re-populated from signup metadata. Probably fine — auth metadata is treated as the source of truth at signup — but worth knowing it isn't strictly a one-shot migration.
+
+- **Race condition on first-ever profile fetch after signup.** Brief window (~milliseconds) between `auth.users` insert and the `handle_new_user` trigger creating the corresponding `profiles` row. If the app fetches the profile in that window, it fails and the user sees a retry button. Retry always succeeds. Not worth fixing at current scale; would require either polling the trigger or having the app create the profile row itself instead of relying on the DB trigger.
+
 ## When in doubt
 
 Ask before:
