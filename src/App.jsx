@@ -16,28 +16,10 @@ import { SetNewPasswordScreen } from "./auth/SetNewPasswordScreen";
 import { OnboardingScreen } from "./auth/OnboardingScreen";
 import { AuthLoading, ProfileLoadError } from "./auth/AuthLayout";
 
-// --- SEED EXERCISES ---
-// trackingMode defaults to 'reps' on every entry; the time-tracked seeds at
-// the bottom (planks, etc.) are bodyweight + time so the rep-range numbers
-// are interpreted as seconds.
-const seedExercises = [
-  { id: "ex-bench", name: "Bench Press", targetReps: [8, 12], unit: "lb", muscle: "Chest", equipment: "Barbell", bumpRule: "all", increment: 5 },
-  { id: "ex-incdb", name: "Incline Dumbell Press", targetReps: [10, 15], unit: "lb", muscle: "Chest", equipment: "Dumbbell", bumpRule: "majority", increment: 2.5 },
-  { id: "ex-tri", name: "Cable Tricep Extension", targetReps: [10, 12], unit: "lb", muscle: "Triceps", equipment: "Cable", bumpRule: "majority", increment: 2.5 },
-  { id: "ex-rows", name: "Cable Rows", targetReps: [10, 15], unit: "lb", muscle: "Back", equipment: "Cable", bumpRule: "all", increment: 5 },
-  { id: "ex-curl", name: "Dumbbell Curls", targetReps: [12, 15], unit: "lb", muscle: "Biceps", equipment: "Dumbbell", bumpRule: "majority", increment: 2.5 },
-  { id: "ex-lat", name: "Lat Pulldowns", targetReps: [8, 12], unit: "lb", muscle: "Back", equipment: "Cable", bumpRule: "all", increment: 5 },
-  { id: "ex-hammer", name: "Hammer Curls", targetReps: [12, 15], unit: "lb", muscle: "Biceps", equipment: "Dumbbell", bumpRule: "majority", increment: 2.5 },
-  { id: "ex-seated", name: "Seated Dumbell Press", targetReps: [8, 12], unit: "lb", muscle: "Shoulders", equipment: "Dumbbell", bumpRule: "all", increment: 2.5 },
-  { id: "ex-lateral", name: "Lateral Raises", targetReps: [12, 15], unit: "lb", muscle: "Shoulders", equipment: "Dumbbell", bumpRule: "majority", increment: 2.5 },
-  { id: "ex-face", name: "Face Pulls", targetReps: [12, 15], unit: "lb", muscle: "Shoulders", equipment: "Cable", bumpRule: "majority", increment: 5 },
-  { id: "ex-plank", name: "Plank", targetReps: [30, 60], unit: "lb", muscle: "Core", equipment: "Bodyweight", bumpRule: "all", increment: 5, tracksWeight: false, trackingMode: "time" },
-  { id: "ex-side-plank", name: "Side Plank", targetReps: [30, 60], unit: "lb", muscle: "Core", equipment: "Bodyweight", bumpRule: "all", increment: 5, tracksWeight: false, trackingMode: "time" },
-  { id: "ex-wall-sit", name: "Wall Sit", targetReps: [30, 60], unit: "lb", muscle: "Legs", equipment: "Bodyweight", bumpRule: "all", increment: 5, tracksWeight: false, trackingMode: "time" },
-  { id: "ex-dead-hang", name: "Dead Hang", targetReps: [20, 45], unit: "lb", muscle: "Back", equipment: "Bodyweight", bumpRule: "all", increment: 5, tracksWeight: false, trackingMode: "time" },
-  { id: "ex-ab-rollout", name: "Ab Wheel Rollout", targetReps: [20, 45], unit: "lb", muscle: "Core", equipment: "Bodyweight", bumpRule: "all", increment: 5, tracksWeight: false, trackingMode: "time" },
-];
-
+// --- SEED PLANS ---
+// Exercises are no longer seeded — every user sees the public catalog
+// (visibility='public', user_id NULL) automatically via RLS. Plans
+// remain per-user and get this starter set on first signup.
 const seedPlans = [
   { id: "p1", name: "Push Day A", description: "Chest, shoulders, triceps", exercises: ["Bench Press", "Incline Dumbell Press", "Lateral Raises", "Cable Tricep Extension"] },
   { id: "p2", name: "Pull Day A", description: "Back & biceps", exercises: ["Cable Rows", "Lat Pulldowns", "Dumbbell Curls", "Hammer Curls", "Face Pulls"] },
@@ -220,6 +202,11 @@ function mapRowToExercise(row) {
     // Default 'reps' so rows that predate this column behave exactly as
     // they did before (and the DB CHECK constraint keeps us honest).
     trackingMode: row.tracking_mode === "time" ? "time" : "reps",
+    // Ownership signals. Public catalog rows have user_id NULL and
+    // visibility 'public'; the user can't edit/delete them, only
+    // "Customize" (insert a private copy).
+    userId: row.user_id || null,
+    visibility: row.visibility === "public" ? "public" : "private",
   };
 }
 
@@ -827,7 +814,9 @@ export default function App() {
         const userId = session.user.id;
         const [profileRes, exRes, plansRes, sessionsRes, historyRes] = await Promise.all([
           supabase.from("profiles").select("*").eq("id", userId).single(),
-          supabase.from("exercises").select("*").eq("user_id", userId).order("created_at", { ascending: true }),
+          // Exercises: no user_id filter — RLS returns the user's private
+          // rows AND every visibility='public' catalog row.
+          supabase.from("exercises").select("*").order("created_at", { ascending: true }),
           supabase.from("plans").select("*").eq("user_id", userId).order("created_at", { ascending: true }),
           supabase.from("sessions").select("*").eq("user_id", userId).order("started_at", { ascending: false }),
           supabase.from("history").select("*").eq("user_id", userId).order("logged_at", { ascending: false }),
@@ -861,30 +850,23 @@ export default function App() {
           }
         }
 
-        let exercisesList = (exRes.data || []).map(mapRowToExercise);
+        const exercisesList = (exRes.data || []).map(mapRowToExercise);
         let plansList = (plansRes.data || []).map(mapRowToPlan);
         const sessionsList = (sessionsRes.data || []).map(mapRowToSession);
         const historyList = (historyRes.data || []).map(mapRowToHistoryEntry);
 
-        // Empty exercises = first-ever launch for this user; seed the library
-        // + plans from the local seed arrays. Plans are seeded only if they
-        // are also empty so a user who deliberately deleted all plans doesn't
-        // get them back. Sessions and history are not seeded — a fresh user
-        // starts with no workouts.
-        if (exercisesList.length === 0) {
-          const seededExRows = seedExercises.map(e => exerciseToDbRow(e, userId));
-          const exInsert = await supabase.from("exercises").insert(seededExRows).select();
+        // Plans seed: a true fresh-signup signal is "no plans AND no
+        // sessions ever logged" — that combination distinguishes a
+        // first-time user from someone who deliberately deleted all
+        // their plans. Exercises are no longer seeded; public catalog
+        // rows are visible to every user via RLS, so a fresh signup
+        // already sees a full library on first load.
+        if (plansList.length === 0 && sessionsList.length === 0) {
+          const seededPlanRows = seedPlans.map(p => planToDbRow(p, userId));
+          const planInsert = await supabase.from("plans").insert(seededPlanRows).select();
           if (cancelled) return;
-          if (exInsert.error) throw exInsert.error;
-          exercisesList = (exInsert.data || []).map(mapRowToExercise);
-
-          if (plansList.length === 0) {
-            const seededPlanRows = seedPlans.map(p => planToDbRow(p, userId));
-            const planInsert = await supabase.from("plans").insert(seededPlanRows).select();
-            if (cancelled) return;
-            if (planInsert.error) throw planInsert.error;
-            plansList = (planInsert.data || []).map(mapRowToPlan);
-          }
+          if (planInsert.error) throw planInsert.error;
+          plansList = (planInsert.data || []).map(mapRowToPlan);
         }
 
         setProfile(profileObj);
@@ -1141,7 +1123,13 @@ export default function App() {
               <LibraryView exercises={exercises} lastByExercise={lastByExercise} onCreate={() => pushView({ type: "exercise-edit", id: null })} onEdit={(id) => pushView({ type: "exercise-edit", id })} onSelect={(name) => pushView({ type: "exercise", name })} />
             )}
             {view?.type === "exercise-edit" && (
+              // key forces a fresh mount when view.id changes, so useState
+              // initializers re-run with the new exercise's values. Matters
+              // for the Customize flow (pop public + push new private in
+              // one batch) where the same component instance would otherwise
+              // hold stale draft state from the public read-only view.
               <ExerciseEditView
+                key={view.id || "new"}
                 exercise={view.id ? exercises.find(e => e.id === view.id) : null}
                 initialName={view.initialName}
                 saveError={librarySaveError}
@@ -1154,6 +1142,31 @@ export default function App() {
                 onDelete={async (id) => {
                   const ok = await deleteExerciseFromLibrary(id);
                   if (ok) popView();
+                }}
+                onCustomize={async () => {
+                  // Look the source up at click-time so a stale closure
+                  // (e.g. exercises list re-fetched while the user was
+                  // reading) doesn't insert a copy of yesterday's row.
+                  const source = exercises.find(e => e.id === view.id);
+                  if (!source) return;
+                  const created = await addExerciseToLibrary({
+                    name: source.name,
+                    muscle: source.muscle,
+                    equipment: source.equipment,
+                    targetReps: source.targetReps,
+                    unit: source.unit,
+                    tracksWeight: source.tracksWeight,
+                    trackingMode: source.trackingMode,
+                    bumpRule: source.bumpRule,
+                    increment: source.increment,
+                  });
+                  if (created) {
+                    // Swap the public read-only view for an edit view on
+                    // the brand-new private copy. Pop+push (rather than
+                    // pushing on top) keeps the back stack clean.
+                    popView();
+                    pushView({ type: "exercise-edit", id: created.id });
+                  }
                 }}
                 onCancel={popView}
               />
@@ -1745,7 +1758,7 @@ function FilterChip({ active, onClick, children }) {
 }
 
 // --- EXERCISE EDIT ---
-function ExerciseEditView({ exercise, initialName, saveError, onSave, onDelete, onCancel }) {
+function ExerciseEditView({ exercise, initialName, saveError, onSave, onDelete, onCustomize, onCancel }) {
   const [name, setName] = useState(exercise?.name || initialName || "");
   const [muscle, setMuscle] = useState(exercise?.muscle || "Chest");
   const [equipment, setEquipment] = useState(exercise?.equipment || "Barbell");
@@ -1756,7 +1769,15 @@ function ExerciseEditView({ exercise, initialName, saveError, onSave, onDelete, 
   const [trackingMode, setTrackingMode] = useState(exercise?.trackingMode === "time" ? "time" : "reps");
   const [bumpRule, setBumpRule] = useState(exercise?.bumpRule || "all");
   const [increment, setIncrement] = useState(exercise?.increment ?? 5);
+  // Async guard: Customize hits Supabase to insert a private copy and
+  // then navigates to the new edit view. Disable the button while the
+  // round-trip is in flight so a double-tap doesn't fire two inserts.
+  const [customizing, setCustomizing] = useState(false);
 
+  // Public catalog rows are read-only — RLS rejects edits from non-owners.
+  // The form still renders normally so the user can review the defaults,
+  // but inputs are disabled and Save is replaced by Customize.
+  const readOnly = exercise?.visibility === "public";
   const isTime = trackingMode === "time";
   // "rep range" wording reused for both modes — only the trailing noun
   // changes ("reps" vs "seconds"). Form-level validation is identical.
@@ -1779,9 +1800,13 @@ function ExerciseEditView({ exercise, initialName, saveError, onSave, onDelete, 
           {saveError}
         </div>
       )}
-      <div className="mt-5 space-y-4">
+      {/* fieldset[disabled] cascades the disabled state to every form
+          control inside, which is exactly the read-only behavior we want
+          for public catalog exercises. min-w-0 + reset border/padding
+          keep the visual layout identical to the original wrapping div. */}
+      <fieldset disabled={readOnly} className="mt-5 space-y-4 min-w-0 border-0 p-0 m-0" style={{ opacity: readOnly ? 0.85 : 1 }}>
         <Field label="Exercise name">
-          <input value={name} onChange={e => setName(e.target.value)} placeholder="e.g. Romanian Deadlift" autoFocus={!exercise} className="w-full surface border border-soft rounded-xl px-4 py-3 text-base focus:outline-none focus:border-strong text-navy-900" />
+          <input value={name} onChange={e => setName(e.target.value)} placeholder="e.g. Romanian Deadlift" autoFocus={!exercise && !readOnly} className="w-full surface border border-soft rounded-xl px-4 py-3 text-base focus:outline-none focus:border-strong text-navy-900" />
         </Field>
 
         <Field label="Muscle group">
@@ -1902,24 +1927,45 @@ function ExerciseEditView({ exercise, initialName, saveError, onSave, onDelete, 
             </div>
           </div>
         </div>
-      </div>
+      </fieldset>
 
-      {exercise && (
+      {exercise && !readOnly && (
         <button onClick={() => onDelete(exercise.id)} className="mt-8 w-full text-red-600 hover:text-red-700 py-3 text-sm font-medium flex items-center justify-center gap-2">
           <Trash2 size={14} /> Delete exercise
         </button>
       )}
 
+      {readOnly && (
+        <div className="mt-8 surface-2 border border-soft rounded-xl p-4 text-xs text-navy-600 leading-relaxed">
+          This is part of Spotter's catalog. To change the defaults, customize a copy you own.
+        </div>
+      )}
+
       <BottomBar>
         <button onClick={onCancel} className="flex-1 py-3 rounded-xl border border-soft text-navy-700 font-medium text-sm">Cancel</button>
-        <button
-          onClick={() => canSave && onSave({ id: exercise?.id, name: name.trim(), muscle, equipment, targetReps: [minReps, maxReps], unit, tracksWeight, trackingMode, bumpRule, increment })}
-          disabled={!canSave}
-          className="flex-1 py-3 rounded-xl text-white font-semibold text-sm disabled:opacity-30 transition"
-          style={{ background: "var(--navy-900)" }}
-        >
-          Save
-        </button>
+        {readOnly ? (
+          <button
+            onClick={async () => {
+              if (customizing) return;
+              setCustomizing(true);
+              try { await onCustomize?.(); } finally { setCustomizing(false); }
+            }}
+            disabled={customizing}
+            className="flex-1 py-3 rounded-xl text-white font-semibold text-sm disabled:opacity-60 transition"
+            style={{ background: "var(--navy-900)" }}
+          >
+            {customizing ? "Customizing…" : "Customize"}
+          </button>
+        ) : (
+          <button
+            onClick={() => canSave && onSave({ id: exercise?.id, name: name.trim(), muscle, equipment, targetReps: [minReps, maxReps], unit, tracksWeight, trackingMode, bumpRule, increment })}
+            disabled={!canSave}
+            className="flex-1 py-3 rounded-xl text-white font-semibold text-sm disabled:opacity-30 transition"
+            style={{ background: "var(--navy-900)" }}
+          >
+            Save
+          </button>
+        )}
       </BottomBar>
     </div>
   );
