@@ -13,7 +13,7 @@ import { focusToEnd } from "./lib/inputs";
 import { AuthGate } from "./auth/AuthGate";
 import { SetNewPasswordScreen } from "./auth/SetNewPasswordScreen";
 import { OnboardingScreen } from "./auth/OnboardingScreen";
-import { AuthLoading } from "./auth/AuthLayout";
+import { AuthLoading, ProfileLoadError } from "./auth/AuthLayout";
 
 // --- SEED EXERCISES ---
 const seedExercises = [
@@ -175,29 +175,49 @@ function readUserOnboarded(session) {
   return false;
 }
 
-// Mirror the localStorage profile fields we care about onto the user's row in
-// the Supabase `profiles` table. Stage 2 keeps localStorage as the source of
-// truth — this is additive, so a Supabase failure never blocks the user.
-// Stage 3 is where the data flips direction. Fire-and-forget; errors are
-// logged but not surfaced.
-function syncProfileToSupabase(userId, fields) {
-  if (!userId) return;
-  supabase
-    .from("profiles")
-    .update({
-      name: fields.name || null,
-      height_cm: fields.heightCm ?? null,
-      weight_kg: fields.weightKg ?? null,
-      gender: fields.gender ?? null,
-      home_gym: fields.homeGym || null,
-      experience_level: fields.experienceLevel ?? null,
-      units: fields.units ?? null,
-      weekly_workout_goal: fields.weeklyWorkoutGoal ?? null,
-    })
-    .eq("id", userId)
-    .then(({ error }) => {
-      if (error) console.error("[profiles] update failed:", error);
-    });
+// Map a row from the Supabase `profiles` table back to the app's camelCase
+// profile shape. Defensive against missing columns (an older schema returns
+// undefined for fields the writer hadn't synced yet) — falls back to sensible
+// defaults so consumers never crash on a partial row. Email always prefers
+// the row value, falls back to the auth session's email.
+function mapRowToProfile(row, fallbackEmail) {
+  if (!row) return null;
+  return {
+    id: row.id,
+    email: row.email || fallbackEmail || "",
+    name: row.name || "",
+    photo: row.photo || null,
+    dateOfBirth: row.date_of_birth || null,
+    heightCm: row.height_cm ?? null,
+    weightKg: row.weight_kg ?? null,
+    gender: row.gender ?? null,
+    goal: row.goal ?? null,
+    homeGym: row.home_gym || "",
+    units: row.units || "imperial",
+    memberSince: row.member_since || null,
+    experienceLevel: row.experience_level ?? null,
+    weeklyWorkoutGoal: row.weekly_workout_goal ?? null,
+  };
+}
+
+// Inverse mapping: turn a camelCase patch into the snake_case payload for an
+// UPDATE. Only writable fields are forwarded (id and email are managed by
+// Supabase auth + trigger; memberSince is set at signup and never edited).
+// Empty strings collapse to null on text fields so the DB stays clean.
+function profileToDbPatch(patch) {
+  const out = {};
+  if ("name" in patch) out.name = patch.name || null;
+  if ("photo" in patch) out.photo = patch.photo || null;
+  if ("dateOfBirth" in patch) out.date_of_birth = patch.dateOfBirth || null;
+  if ("heightCm" in patch) out.height_cm = patch.heightCm ?? null;
+  if ("weightKg" in patch) out.weight_kg = patch.weightKg ?? null;
+  if ("gender" in patch) out.gender = patch.gender ?? null;
+  if ("goal" in patch) out.goal = patch.goal ?? null;
+  if ("homeGym" in patch) out.home_gym = patch.homeGym || null;
+  if ("units" in patch) out.units = patch.units ?? null;
+  if ("experienceLevel" in patch) out.experience_level = patch.experienceLevel ?? null;
+  if ("weeklyWorkoutGoal" in patch) out.weekly_workout_goal = patch.weeklyWorkoutGoal ?? null;
+  return out;
 }
 
 // --- ROOT ---
@@ -206,20 +226,14 @@ export default function App() {
   const [sessions, setSessions] = useLocalStorage("sessions", seedSessions);
   const [plans, setPlans] = useLocalStorage("plans", seedPlans);
   const [exercises, setExercises] = useLocalStorage("exercises", seedExercises);
-  const [profile, setProfile] = useLocalStorage("profile", {
-    id: "u1",
-    name: "Mackenzie Clark",
-    email: "cmac0792@gmail.com",
-    photo: null, // base64 or null — falls back to initials
-    dateOfBirth: "1992-07-15",
-    heightCm: 180,
-    weightKg: 84,
-    gender: "Male",
-    goal: "Hypertrophy",
-    homeGym: "",
-    units: "imperial", // imperial | metric
-    memberSince: new Date().toISOString().split("T")[0],
-  });
+  // Profile is now Supabase-backed: fetched on session arrival, written on
+  // edit. localStorage no longer holds the source of truth (the orphaned
+  // liftlog:profile key from previous versions is left in place but ignored).
+  const [profile, setProfile] = useState(null);
+  const [profileError, setProfileError] = useState(null);
+  const [profileSaveError, setProfileSaveError] = useState(null);
+  // Bumped to retry the profile fetch from the error screen.
+  const [profileFetchTick, setProfileFetchTick] = useState(0);
   const [tab, setTab] = useState("home");
   // Navigation is a stack: each pushView appends, popView trims the last entry,
   // resetView clears it. The current view is the top of the stack (or null when
@@ -379,6 +393,11 @@ export default function App() {
       setViewStack([]);
     } else if (!session && wasSignedIn) {
       setActiveWorkout(null);
+      // Profile state is per-session — drop it so the next sign-in fetches
+      // fresh rather than rendering with stale data from the previous user.
+      setProfile(null);
+      setProfileError(null);
+      setProfileSaveError(null);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [session]);
@@ -405,47 +424,89 @@ export default function App() {
     setPlans(seedPlans);
     setExercises(seedExercises);
     setActiveWorkout(null);
-    setProfile({
-      id: session.user.id,
-      email: session.user.email || "",
-      name: "",
-      photo: null,
-      dateOfBirth: null,
-      heightCm: null,
-      weightKg: null,
-      gender: null,
-      goal: null,
-      homeGym: "",
-      units: "imperial",
-      memberSince: new Date().toISOString().split("T")[0],
-      experienceLevel: null,
-      weeklyWorkoutGoal: null,
-    });
+    // Profile is loaded from Supabase by the fetch effect below — the
+    // handle_new_user trigger creates the row at signup, we don't write a
+    // local placeholder anymore.
     localStorage.setItem(userInitKey, "1");
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [session, userInitialized]);
 
-  const finishOnboarding = (patch) => {
-    // Always re-set profile (even with empty patch) so the synchronous
-    // userOnboarded read picks up the new flag on the next render.
-    setProfile({ ...profile, ...patch });
-    if (session) {
-      localStorage.setItem(`liftlog:onboarded:${session.user.id}`, "true");
-      // Skip sends an empty patch; only mirror to Supabase when the user
-      // actually filled in (or confirmed) values via Continue.
-      if (Object.keys(patch).length > 0) {
-        syncProfileToSupabase(session.user.id, patch);
+  // Fetch the user's profile row from Supabase whenever the userId changes
+  // (initial session restore, sign-in, or a manual retry via profileFetchTick).
+  // Errors surface via profileError, which the gate uses to render
+  // ProfileLoadError instead of leaving the user on a permanent spinner.
+  useEffect(() => {
+    if (!session) return;
+    let cancelled = false;
+    setProfileError(null);
+    (async () => {
+      const { data, error } = await supabase
+        .from("profiles")
+        .select("*")
+        .eq("id", session.user.id)
+        .single();
+      if (cancelled) return;
+      if (error) {
+        setProfileError(error.message || "Couldn't load your profile. Check your connection and try again.");
+        return;
       }
+      setProfile(mapRowToProfile(data, session.user.email));
+    })();
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [session?.user.id, profileFetchTick]);
+
+  const retryProfileFetch = () => setProfileFetchTick(t => t + 1);
+
+  // Optimistic write with rollback. The local profile is updated immediately
+  // so the UI feels responsive; if Supabase rejects the update we revert and
+  // surface profileSaveError for the active form to render. Returns true on
+  // success so the caller (ProfileEditView, OnboardingScreen) can decide
+  // whether to dismiss itself.
+  const updateProfile = async (patch) => {
+    if (!session) return false;
+    const previous = profile;
+    const next = profile ? { ...profile, ...patch } : { ...patch };
+    setProfile(next);
+    setProfileSaveError(null);
+
+    const dbPatch = profileToDbPatch(patch);
+    if (Object.keys(dbPatch).length === 0) return true;
+
+    const { error } = await supabase
+      .from("profiles")
+      .update(dbPatch)
+      .eq("id", session.user.id);
+    if (error) {
+      setProfile(previous);
+      setProfileSaveError(error.message || "Couldn't save your changes. Check your connection and try again.");
+      return false;
     }
+    return true;
+  };
+
+  const finishOnboarding = async (patch) => {
+    if (!session) return;
+    if (Object.keys(patch).length > 0) {
+      const ok = await updateProfile(patch);
+      if (!ok) return; // user stays on welcome; saveError surfaces in the form
+    }
+    localStorage.setItem(`liftlog:onboarded:${session.user.id}`, "true");
+    // userOnboarded is a synchronous read of localStorage that re-evaluates on
+    // every render; force a re-render so it picks up the new flag. The Skip
+    // path doesn't go through updateProfile so we have to nudge state here.
+    setProfile(p => p ? { ...p } : p);
   };
 
   let authShell = null;
   if (authLoading) authShell = <AuthLoading />;
   else if (isPasswordRecovery) authShell = <SetNewPasswordScreen />;
   else if (!session) authShell = <AuthGate />;
+  else if (profileError) authShell = <ProfileLoadError onRetry={retryProfileFetch} />;
+  else if (!profile) authShell = <AuthLoading />;
   else if (!userInitialized) authShell = <AuthLoading />;
   else if (!userOnboarded) {
-    authShell = <OnboardingScreen onComplete={finishOnboarding} />;
+    authShell = <OnboardingScreen onComplete={finishOnboarding} saveError={profileSaveError} />;
   }
 
   return (
@@ -637,12 +698,13 @@ export default function App() {
             {view?.type === "profile-edit" && (
               <ProfileEditView
                 profile={profile}
-                onSave={(p) => {
-                  setProfile(p);
-                  if (session) syncProfileToSupabase(session.user.id, p);
-                  popView();
+                saveError={profileSaveError}
+                onSave={async (p) => {
+                  const ok = await updateProfile(p);
+                  if (ok) popView();
+                  // On failure the form stays open and saveError renders inline.
                 }}
-                onCancel={popView}
+                onCancel={() => { setProfileSaveError(null); popView(); }}
               />
             )}
           </>
@@ -2426,7 +2488,7 @@ function DetailRow({ icon: Icon, label, value }) {
   );
 }
 
-function ProfileEditView({ profile, onSave, onCancel }) {
+function ProfileEditView({ profile, saveError, onSave, onCancel }) {
   const [draft, setDraft] = useState({ ...profile });
   const fileInputRef = useRef(null);
 
@@ -2529,13 +2591,27 @@ function ProfileEditView({ profile, onSave, onCancel }) {
         </div>
       </div>
 
+      {saveError && (
+        <div
+          className="mt-5 rounded-xl px-3 py-2.5 text-xs leading-relaxed border"
+          style={{ background: "rgba(220, 38, 38, 0.05)", borderColor: "rgba(220, 38, 38, 0.2)", color: "#dc2626" }}
+        >
+          {saveError}
+        </div>
+      )}
+
       <div className="mt-7 space-y-4">
         <Field label="Full name">
           <input value={draft.name} onChange={e => update({ name: e.target.value })} placeholder="Your name" className="w-full surface border border-soft rounded-xl px-4 py-3 text-base focus:outline-none focus:border-strong text-navy-900" />
         </Field>
 
-        <Field label="Email">
-          <input type="email" value={draft.email || ""} onChange={e => update({ email: e.target.value })} placeholder="you@example.com" className="w-full surface border border-soft rounded-xl px-4 py-3 text-base focus:outline-none focus:border-strong text-navy-900" />
+        <Field label="Email" hint="Your sign-in email. Edit this from account settings (coming soon).">
+          <input
+            type="email"
+            value={draft.email || ""}
+            disabled
+            className="w-full surface-2 border border-soft rounded-xl px-4 py-3 text-base focus:outline-none text-navy-500 cursor-not-allowed"
+          />
         </Field>
 
         <Field label="Home gym" hint="Where you usually train — shown on your profile">

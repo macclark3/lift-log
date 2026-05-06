@@ -1,5 +1,5 @@
 import React, { useState } from "react";
-import { AuthLayout } from "./AuthLayout";
+import { AuthLayout, AuthError } from "./AuthLayout";
 import { focusToEnd } from "../lib/inputs";
 
 const GENDER_OPTIONS = ["Male", "Female", "Non-binary", "Prefer not to say"];
@@ -12,7 +12,8 @@ const EXPERIENCE_OPTIONS = ["Beginner", "Intermediate", "Advanced"];
 // caller has already wiped per-user localStorage to a clean state. Only
 // Continue writes the entered values to profile; Skip leaves profile
 // untouched.
-export function OnboardingScreen({ onComplete }) {
+export function OnboardingScreen({ onComplete, saveError }) {
+  const [submitting, setSubmitting] = useState(false);
   const [name, setName] = useState("");
   // Imperial is the default visual selection; the user can flip it.
   const [units, setUnits] = useState("imperial");
@@ -46,20 +47,34 @@ export function OnboardingScreen({ onComplete }) {
     return Number.isFinite(kg) && kg > 0 ? kg : null;
   };
 
-  const handleContinue = () => {
-    onComplete({
-      name: name.trim(),
-      units,
-      heightCm: computedHeightCm(),
-      weightKg: computedWeightKg(),
-      gender,
-      homeGym: homeGym.trim(),
-      experienceLevel,
-      weeklyWorkoutGoal,
-    });
+  const handleContinue = async () => {
+    if (submitting) return;
+    setSubmitting(true);
+    try {
+      await onComplete({
+        name: name.trim(),
+        units,
+        heightCm: computedHeightCm(),
+        weightKg: computedWeightKg(),
+        gender,
+        homeGym: homeGym.trim(),
+        experienceLevel,
+        weeklyWorkoutGoal,
+      });
+    } finally {
+      setSubmitting(false);
+    }
   };
 
-  const handleSkip = () => onComplete({});
+  const handleSkip = async () => {
+    if (submitting) return;
+    setSubmitting(true);
+    try {
+      await onComplete({});
+    } finally {
+      setSubmitting(false);
+    }
+  };
 
   return (
     <AuthLayout subtitle="Welcome — let's set things up">
@@ -148,17 +163,21 @@ export function OnboardingScreen({ onComplete }) {
           </div>
         </Field>
 
+        {saveError && <AuthError message={saveError} />}
+
         <div className="pt-2 space-y-2">
           <button
             onClick={handleContinue}
-            className="w-full text-white py-3.5 rounded-xl font-semibold text-sm transition"
+            disabled={submitting}
+            className="w-full text-white py-3.5 rounded-xl font-semibold text-sm disabled:opacity-60 transition"
             style={{ background: "var(--navy-900)" }}
           >
-            Continue
+            {submitting ? "Saving…" : "Continue"}
           </button>
           <button
             onClick={handleSkip}
-            className="w-full text-sm text-navy-500 hover:text-navy-900 transition py-2"
+            disabled={submitting}
+            className="w-full text-sm text-navy-500 hover:text-navy-900 disabled:opacity-60 transition py-2"
           >
             Skip for now
           </button>

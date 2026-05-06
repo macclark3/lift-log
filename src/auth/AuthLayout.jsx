@@ -78,3 +78,34 @@ export function AuthLoading() {
     </div>
   );
 }
+
+// Shown when the initial profile fetch fails (network, RLS, missing row, etc.)
+// instead of leaving the user on a permanent loading spinner. Retries via
+// onRetry, which bumps a fetch counter on the App side.
+export function ProfileLoadError({ onRetry }) {
+  return (
+    <div
+      className="min-h-screen flex flex-col items-center justify-center px-6 text-center"
+      style={{
+        fontFamily: "'Inter', -apple-system, BlinkMacSystemFont, system-ui, sans-serif",
+        background: "linear-gradient(180deg, #fafbfd 0%, #f1f4f9 100%)",
+        color: "var(--navy-900)",
+      }}
+    >
+      <div className="serif text-3xl tracking-tight mb-4" style={{ fontWeight: 500, color: "var(--navy-900)" }}>
+        Spotter
+      </div>
+      <p className="text-sm text-navy-700 mb-1">Couldn't load your profile.</p>
+      <p className="text-xs text-navy-500 mb-6 max-w-xs leading-relaxed">
+        Check your connection and try again.
+      </p>
+      <button
+        onClick={onRetry}
+        className="px-5 py-2.5 rounded-xl text-white font-semibold text-sm transition"
+        style={{ background: "var(--navy-900)" }}
+      >
+        Try again
+      </button>
+    </div>
+  );
+}
