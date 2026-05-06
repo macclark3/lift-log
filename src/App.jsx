@@ -284,7 +284,11 @@ function mapRowToSession(row) {
     id: row.id,
     name: row.name || "Workout",
     startedAt: row.started_at,
-    endedAt: row.ended_at || row.started_at,
+    // Preserve null endedAt so callers can detect a session that's been
+    // resumed (and is currently the active workout). The Past tab filters
+    // these out; finishing the active workout writes ended_at and the
+    // session reappears in the list.
+    endedAt: row.ended_at || null,
   };
 }
 
@@ -389,8 +393,14 @@ export default function App() {
 
   const recentExercisesList = useMemo(() => Array.from(lastByExercise.values()), [lastByExercise]);
 
+  // Recent workouts list excludes any session whose endedAt is null —
+  // that's a resumed session currently in flight as the activeWorkout
+  // and showing it twice (once in the recent list and again in the
+  // "Resume Workout" hero) would be confusing.
   const recentSessions = useMemo(() => {
-    return [...sessions].sort((a, b) => b.startedAt.localeCompare(a.startedAt));
+    return [...sessions]
+      .filter(s => s.endedAt)
+      .sort((a, b) => b.startedAt.localeCompare(a.startedAt));
   }, [sessions]);
 
   // Library writes are pessimistic on create (we wait for the inserted row
@@ -512,19 +522,123 @@ export default function App() {
     setActiveWorkout({ ...activeWorkout, minimized: false });
   };
 
+  // Pull a finished session back into the live activeWorkout state.
+  // - The session row's started_at moves to (NOW - 30min) and ended_at
+  //   clears to null, so duration math reads ~30:00 on entry and the
+  //   session attributes to today once finished again.
+  // - History rows stay attached; we just rebuild the active workout's
+  //   in-memory exercise objects from them.
+  // - The same session id stays in play through finish, so finishing
+  //   the resumed workout updates this row instead of creating a
+  //   duplicate.
+  // - Blocked when an activeWorkout is already in flight (caller checks
+  //   activeWorkout itself; this is also defended here).
+  // Returns true on success.
+  const resumeSession = async (sessionId) => {
+    if (!session) return false;
+    if (activeWorkout) {
+      setLibrarySaveError("You have a workout in progress. Finish or discard it before resuming another.");
+      return false;
+    }
+    setLibrarySaveError(null);
+    const sourceSession = sessions.find(s => s.id === sessionId);
+    if (!sourceSession) return false;
+
+    const newStartedAt = new Date(Date.now() - 30 * 60 * 1000).toISOString();
+    const { error: updateErr } = await supabase
+      .from("sessions")
+      .update({ started_at: newStartedAt, ended_at: null })
+      .eq("id", sessionId);
+    if (updateErr) {
+      setLibrarySaveError(updateErr.message || "Couldn't resume the workout. Check your connection and try again.");
+      return false;
+    }
+
+    // Reconstruct the active-workout exercises from current history.
+    // Sort by logged_at so the resumed view matches the original order.
+    const sessionEntries = history
+      .filter(h => h.workoutId === sessionId)
+      .sort((a, b) => a.date.localeCompare(b.date));
+    const resumedExercises = sessionEntries.map(entry => {
+      const libEx = exercises.find(e => e.name === entry.exercise);
+      const weighted = tracksWeightFor(libEx);
+      const mode = trackingModeFor(libEx);
+      return {
+        exercise: entry.exercise,
+        weight: entry.weight ?? 0,
+        // Suppress the "last time" hero — for resumed entries, the user
+        // is already looking at their own logged values; the most-recent
+        // history match is this same entry, which would be redundant.
+        lastWeight: null,
+        lastReps: [],
+        lastDate: null,
+        targetReps: libEx?.targetReps || entry.targetReps || [8, 12],
+        unit: libEx?.unit || entry.unit || "lb",
+        tracksWeight: weighted,
+        trackingMode: mode,
+        increment: libEx?.increment ?? 5,
+        // Existing reps preserved verbatim, padded to a min of 1 so the
+        // SetRow always has a row to interact with.
+        reps: entry.reps && entry.reps.length > 0 ? [...entry.reps] : [0],
+        note: entry.note || "",
+        bumped: false,
+        holdLonger: false,
+      };
+    });
+
+    // Reflect the row's new timestamps in local sessions state. PastView
+    // filters out null-endedAt rows, so the resumed session disappears
+    // from the past list while it's live.
+    setSessions(prev => prev.map(s => s.id === sessionId
+      ? { ...s, startedAt: newStartedAt, endedAt: null }
+      : s
+    ));
+
+    setActiveWorkout({
+      id: `w${Date.now()}`,
+      resumedSessionId: sessionId,
+      resumedSessionName: sourceSession.name,
+      // Original timestamps are stashed so cancelWorkout can restore them
+      // without us needing to know what they were at cancel time. History
+      // rows are never modified during the resumed session, only on
+      // finish — so cancel just needs to undo the started_at/ended_at
+      // changes from the resume.
+      resumedOriginalStartedAt: sourceSession.startedAt,
+      resumedOriginalEndedAt: sourceSession.endedAt,
+      startedAt: newStartedAt,
+      exercises: resumedExercises,
+      planQueue: [],
+      minimized: false,
+    });
+    resetView();
+    setTab("home");
+    return true;
+  };
+
   // Convert the in-flight activeWorkout into a persisted session + history
-  // rows. Done in two server round-trips: insert the session first so we
-  // have its real id, then bulk-insert history rows referencing that id.
-  // If history insert fails after the session was created we delete the
-  // orphan session so the user doesn't end up with an empty workout in
-  // their Past tab — they can retry cleanly.
+  // rows. Two flows depending on whether the workout was resumed from a
+  // past session:
+  //   - resumedSessionId set: UPDATE the existing session row (ended_at,
+  //     possibly name) and replace its history rows via updateSession's
+  //     delete-then-insert path.
+  //   - otherwise: INSERT a new session, then bulk-insert history
+  //     referencing it. Orphan-session cleanup if history insert fails.
   // Returns true on success (caller closes the finish modal); false on
   // failure (activeWorkout is preserved so the user can retry).
   const finishWorkout = async (workoutName) => {
     if (!activeWorkout) return false;
     const completed = activeWorkout.exercises.filter(ex => ex.reps.some(r => r > 0));
+    const trimmedName = (workoutName && workoutName.trim()) || "Workout";
+
     if (completed.length === 0 || !session) {
       // Empty workout — nothing to persist, just discard.
+      // For a resumed session this would normally drop all the
+      // previously-logged sets; safer to refuse the finish so the user
+      // can pick what to do.
+      if (activeWorkout.resumedSessionId) {
+        setLibrarySaveError("This resumed workout has no sets. Add some, or discard to delete the original.");
+        return false;
+      }
       setActiveWorkout(null); resetView(); setTab("home");
       return true;
     }
@@ -534,12 +648,40 @@ export default function App() {
     const startedAt = activeWorkout.startedAt;
     const endedAt = new Date().toISOString();
 
+    // --- Resumed-session flow: UPDATE in place. ---
+    if (activeWorkout.resumedSessionId) {
+      const sessionId = activeWorkout.resumedSessionId;
+      const baseTime = new Date(startedAt).getTime();
+      // Build the same shape historyEntryToDbRow expects — id is unset
+      // since the rows will be reinserted with fresh ids.
+      const updatedEntries = completed.map((ex, i) => ({
+        date: new Date(baseTime + i * 60000).toISOString(),
+        exercise: ex.exercise,
+        weight: ex.weight ?? 0,
+        reps: ex.reps.filter(r => r > 0),
+        targetReps: ex.targetReps,
+        unit: ex.unit || "lb",
+        note: ex.note || undefined,
+      }));
+      const ok = await updateSession(
+        sessionId,
+        { name: trimmedName, startedAt, endedAt },
+        updatedEntries,
+      );
+      if (!ok) return false;
+      setActiveWorkout(null);
+      resetView();
+      setTab("home");
+      return true;
+    }
+
+    // --- Fresh-session flow: INSERT session, then INSERT history. ---
     // 1) Insert the session.
     const { data: sessionRow, error: sessionErr } = await supabase
       .from("sessions")
       .insert([{
         user_id: userId,
-        name: (workoutName && workoutName.trim()) || "Workout",
+        name: trimmedName,
         started_at: startedAt,
         ended_at: endedAt,
       }])
@@ -591,7 +733,33 @@ export default function App() {
     return true;
   };
 
-  const cancelWorkout = () => { setActiveWorkout(null); resetView(); setTab("home"); };
+  // Cancel discards the in-flight workout. For resumed sessions we
+  // also have to undo the started_at/ended_at mutation done by
+  // resumeSession — otherwise the session would be left as an orphan
+  // (endedAt null, hidden from the past list, no UI to recover it).
+  // History rows are untouched since the resumed session never modifies
+  // them in flight; only finish does. Best-effort: if the restore call
+  // fails, we still clear local state so the user isn't stuck.
+  const cancelWorkout = async () => {
+    const w = activeWorkout;
+    setActiveWorkout(null);
+    resetView();
+    setTab("home");
+    if (!w?.resumedSessionId) return;
+    const { resumedSessionId, resumedOriginalStartedAt, resumedOriginalEndedAt } = w;
+    setSessions(prev => prev.map(s => s.id === resumedSessionId
+      ? { ...s, startedAt: resumedOriginalStartedAt, endedAt: resumedOriginalEndedAt }
+      : s
+    ));
+    const { error } = await supabase
+      .from("sessions")
+      .update({
+        started_at: resumedOriginalStartedAt,
+        ended_at: resumedOriginalEndedAt,
+      })
+      .eq("id", resumedSessionId);
+    if (error) console.warn("[resume] cancel failed to restore session timestamps:", error);
+  };
 
   // Edit a past session: rename and/or replace its history entries. The
   // entries replace is a delete-then-insert against Supabase (simpler than
@@ -1096,7 +1264,11 @@ export default function App() {
                   />
                 )}
                 {tab === "past" && (
-                  <PastView sessions={sessions} history={history} onSelectSession={(id) => pushView({ type: "session", id })} onGoHome={() => setTab("home")} />
+                  // Filter out resumed-in-flight sessions (endedAt null).
+                  // They're live as the active workout; showing them in
+                  // the past list would be misleading (and the duration
+                  // / avg duration math would NaN on null endedAt).
+                  <PastView sessions={sessions.filter(s => s.endedAt)} history={history} onSelectSession={(id) => pushView({ type: "session", id })} onGoHome={() => setTab("home")} />
                 )}
                 {tab === "plans" && (
                   <PlansView plans={plans} onCreate={() => pushView({ type: "plan-edit", id: null })} onEdit={(id) => pushView({ type: "plan-edit", id })} onUse={(plan) => startWorkout(plan.exercises)} />
@@ -1121,7 +1293,15 @@ export default function App() {
                 entries={history.filter(h => h.workoutId === view.id).sort((a,b) => a.date.localeCompare(b.date))}
                 exercises={exercises}
                 lastByExercise={lastByExercise}
+                hasActiveWorkout={!!activeWorkout}
                 onUpdate={updateSession}
+                onResume={async (id) => {
+                  // resumeSession itself sets librarySaveError on conflict
+                  // and on Supabase failure; on success it redirects to
+                  // the active workout view via setActiveWorkout +
+                  // resetView, which unmounts this detail view.
+                  await resumeSession(id);
+                }}
                 onDelete={async (id) => {
                   const ok = await deleteSession(id);
                   if (ok) popView();
@@ -2171,7 +2351,7 @@ function StatTile({ label, value, unit }) {
   );
 }
 
-function SessionDetailView({ session, entries, exercises, lastByExercise, onUpdate, onDelete, onCreateExercise, librarySaveError }) {
+function SessionDetailView({ session, entries, exercises, lastByExercise, hasActiveWorkout, onUpdate, onResume, onDelete, onCreateExercise, librarySaveError }) {
   const [editing, setEditing] = useState(false);
   const [draftName, setDraftName] = useState(session?.name || "");
   const [draftEntries, setDraftEntries] = useState(entries);
@@ -2196,7 +2376,13 @@ function SessionDetailView({ session, entries, exercises, lastByExercise, onUpda
   }, [confirmDelete]);
 
   if (!session) return null;
-  const duration = Math.floor((new Date(session.endedAt) - new Date(session.startedAt)) / 60000);
+  // endedAt is null for a session that's been resumed and is currently
+  // the activeWorkout. Such sessions are filtered out of the past list
+  // upstream, so this branch is mostly defensive — but if it ever does
+  // render here, show "—" rather than NaN minutes.
+  const duration = session.endedAt
+    ? Math.floor((new Date(session.endedAt) - new Date(session.startedAt)) / 60000)
+    : null;
   const displayEntries = editing ? draftEntries : entries;
   // Time-tracked entries don't contribute to a "Total reps" stat — their
   // numbers are seconds, not reps. Sum reps-mode entries only.
@@ -2304,7 +2490,7 @@ function SessionDetailView({ session, entries, exercises, lastByExercise, onUpda
           <div className="serif text-2xl mt-1 text-white" style={{ fontWeight: 500 }}>{session.name}</div>
         )}
         <div className="grid grid-cols-3 gap-2 mt-5">
-          <SessionStat label="Duration" value={`${duration}m`} />
+          <SessionStat label="Duration" value={duration == null ? "—" : `${duration}m`} />
           <SessionStat label="Exercises" value={displayEntries.length} />
           <SessionStat label="Total reps" value={totalReps} />
         </div>
@@ -2312,27 +2498,48 @@ function SessionDetailView({ session, entries, exercises, lastByExercise, onUpda
 
       {/* Action bar */}
       {!editing ? (
-        <div className="mt-4 flex gap-2">
+        <div className="mt-4 space-y-2">
+          {/* Resume — primary action. Friction-free (no confirmation):
+              users can always finish or discard the resumed workout.
+              Disabled and explanatory when an active workout is already
+              in flight; the underlying onResume also surfaces that
+              guard via librarySaveError, but disabling the button gives
+              the user immediate visual feedback. */}
           <button
-            onClick={() => setEditing(true)}
-            className="flex-1 surface border border-soft text-navy-700 py-2.5 rounded-xl text-sm font-medium flex items-center justify-center gap-1.5 hover:bg-navy-50 transition"
+            onClick={() => !hasActiveWorkout && onResume?.(session.id)}
+            disabled={hasActiveWorkout}
+            className="w-full text-white py-3 rounded-xl text-sm font-semibold flex items-center justify-center gap-2 disabled:opacity-50 transition"
+            style={{ background: "var(--navy-900)" }}
           >
-            <Edit3 size={13} /> Edit
+            <Play size={14} strokeWidth={2.5} fill="currentColor" /> Resume
           </button>
-          <button
-            onClick={async () => {
-              if (confirmDelete) await onDelete(session.id);
-              else setConfirmDelete(true);
-            }}
-            className="flex-1 py-2.5 rounded-xl text-sm font-medium flex items-center justify-center gap-1.5 transition border"
-            style={{
-              borderColor: confirmDelete ? "#dc2626" : "var(--border)",
-              color: confirmDelete ? "#dc2626" : "var(--navy-700)",
-              background: confirmDelete ? "rgba(220, 38, 38, 0.05)" : "var(--surface)",
-            }}
-          >
-            <Trash2 size={13} /> {confirmDelete ? "Tap to confirm" : "Delete"}
-          </button>
+          {hasActiveWorkout && (
+            <div className="text-xs text-navy-500 leading-relaxed">
+              You have a workout in progress. Finish or discard it before resuming another.
+            </div>
+          )}
+          <div className="flex gap-2">
+            <button
+              onClick={() => setEditing(true)}
+              className="flex-1 surface border border-soft text-navy-700 py-2.5 rounded-xl text-sm font-medium flex items-center justify-center gap-1.5 hover:bg-navy-50 transition"
+            >
+              <Edit3 size={13} /> Edit
+            </button>
+            <button
+              onClick={async () => {
+                if (confirmDelete) await onDelete(session.id);
+                else setConfirmDelete(true);
+              }}
+              className="flex-1 py-2.5 rounded-xl text-sm font-medium flex items-center justify-center gap-1.5 transition border"
+              style={{
+                borderColor: confirmDelete ? "#dc2626" : "var(--border)",
+                color: confirmDelete ? "#dc2626" : "var(--navy-700)",
+                background: confirmDelete ? "rgba(220, 38, 38, 0.05)" : "var(--surface)",
+              }}
+            >
+              <Trash2 size={13} /> {confirmDelete ? "Tap to confirm" : "Delete"}
+            </button>
+          </div>
         </div>
       ) : (
         <div className="mt-4 surface-2 border border-soft rounded-xl p-3 text-xs text-navy-600 leading-relaxed">
@@ -3635,7 +3842,9 @@ function WorkoutView({ workout, setWorkout, exercises, lastByExercise, onCreateE
   const [showPicker, setShowPicker] = useState(workout.exercises.length === 0 && workout.planQueue.length === 0);
   const [activeIdx, setActiveIdx] = useState(Math.max(0, workout.exercises.length - 1));
   const [showFinish, setShowFinish] = useState(false);
-  const [workoutName, setWorkoutName] = useState("");
+  // Resumed workouts pre-fill the original session name so the user
+  // doesn't have to retype it. New workouts start blank as before.
+  const [workoutName, setWorkoutName] = useState(workout.resumedSessionName || "");
   // When non-null, open the full ExerciseEditView as a modal pre-filled with this name.
   const [pendingNewExerciseName, setPendingNewExerciseName] = useState(null);
   // Locks the finish modal while the persist round-trip is in flight so a
