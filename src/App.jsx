@@ -565,9 +565,11 @@ export default function App() {
                   <HomeView
                     recentSessions={recentSessions}
                     recentExercisesList={recentExercisesList}
+                    sessions={sessions}
                     history={history}
                     plans={plans}
                     exercises={exercises}
+                    profile={profile}
                     activeWorkout={activeWorkout}
                     onStartBlank={() => startWorkout()}
                     onStartFromPlan={(plan) => startWorkout(plan.exercises)}
@@ -575,6 +577,7 @@ export default function App() {
                     onSelectExercise={(name) => pushView({ type: "exercise", name })}
                     onSelectSession={(id) => pushView({ type: "session", id })}
                     onOpenLibrary={() => pushView({ type: "library" })}
+                    onOpenProfileEdit={() => pushView({ type: "profile-edit" })}
                   />
                 )}
                 {tab === "past" && (
@@ -834,7 +837,7 @@ function BottomDock({ showTabBar, showMinimizedBar, tab, onTabChange, workout, o
 }
 
 // --- HOME ---
-function HomeView({ recentSessions, recentExercisesList, history, plans, exercises, activeWorkout, onStartBlank, onStartFromPlan, onResume, onSelectSession, onOpenLibrary }) {
+function HomeView({ recentSessions, recentExercisesList, sessions, history, plans, exercises, profile, activeWorkout, onStartBlank, onStartFromPlan, onResume, onSelectExercise, onSelectSession, onOpenLibrary, onOpenProfileEdit }) {
   const [showPlanPicker, setShowPlanPicker] = useState(false);
 
   const greeting = useMemo(() => {
@@ -843,6 +846,57 @@ function HomeView({ recentSessions, recentExercisesList, history, plans, exercis
     if (h < 18) return "Good afternoon";
     return "Good evening";
   }, []);
+
+  // This week — Monday 00:00 local through Sunday 23:59. Counts sessions
+  // whose startedAt falls inside that window.
+  const workoutsThisWeek = useMemo(() => {
+    const d = new Date();
+    d.setHours(0, 0, 0, 0);
+    const day = d.getDay();
+    const offset = day === 0 ? -6 : 1 - day; // Sunday rolls back to last Monday
+    d.setDate(d.getDate() + offset);
+    const weekStart = d.getTime();
+    return (sessions || []).filter(s => new Date(s.startedAt).getTime() >= weekStart).length;
+  }, [sessions]);
+
+  const weeklyGoal = profile?.weeklyWorkoutGoal ?? null;
+
+  // This month — total volume / sets / reps for entries dated within the
+  // current calendar month. Volume converts each entry's value to the
+  // user's preferred unit before summing (mixed lb/kg histories have to
+  // be normalized) and skips bodyweight (weight 0/null) entries.
+  const monthStats = useMemo(() => {
+    const now = new Date();
+    const monthStart = new Date(now.getFullYear(), now.getMonth(), 1).getTime();
+    const targetUnit = profile?.units === "metric" ? "kg" : "lb";
+    let volume = 0;
+    let sets = 0;
+    let reps = 0;
+    (history || []).forEach(entry => {
+      if (new Date(entry.date).getTime() < monthStart) return;
+      sets += entry.reps.length;
+      const entryReps = entry.reps.reduce((a, b) => a + b, 0);
+      reps += entryReps;
+      if (!entry.weight || entry.weight <= 0) return;
+      let weight = entry.weight;
+      if (entry.unit !== targetUnit) {
+        weight = entry.unit === "kg" ? weight * 2.205 : weight / 2.205;
+      }
+      volume += weight * entryReps;
+    });
+    return { volume: Math.round(volume), sets, reps, unit: targetUnit };
+  }, [history, profile?.units]);
+
+  // Pills: exercises whose most-recent entry has earned a level-up.
+  const libByName = useMemo(() => {
+    const m = new Map();
+    (exercises || []).forEach(e => m.set(e.name, e));
+    return m;
+  }, [exercises]);
+  const readyToBump = useMemo(
+    () => (recentExercisesList || []).filter(e => getProgressionStatus(e, libByName.get(e.exercise))?.status === "bump"),
+    [recentExercisesList, libByName]
+  );
 
   return (
     <div className="px-5 pb-28">
@@ -890,8 +944,86 @@ function HomeView({ recentSessions, recentExercisesList, history, plans, exercis
         </div>
       )}
 
-      {/* Level up alerts */}
-      <LevelUpAlerts recentExercisesList={recentExercisesList} exercises={exercises} />
+      {/* This week */}
+      <div className="mt-7">
+        <div className="text-[10px] uppercase tracking-[0.18em] text-navy-500 mono font-medium mb-2">This week</div>
+        <div className="surface border border-soft card-shadow rounded-2xl p-5">
+          <div className="flex items-center gap-5">
+            <div className="flex-1 min-w-0">
+              <div className="flex items-baseline gap-1.5">
+                <span className="text-4xl font-semibold mono text-navy-900">{workoutsThisWeek}</span>
+                {weeklyGoal != null && (
+                  <span className="text-base mono text-navy-400">of {weeklyGoal}</span>
+                )}
+              </div>
+              <div className="text-[10px] uppercase tracking-[0.18em] text-navy-500 mono font-medium mt-1">Workouts</div>
+            </div>
+            {weeklyGoal != null && (
+              <div className="flex items-center gap-2 shrink-0" aria-hidden="true">
+                {Array.from({ length: weeklyGoal }).map((_, i) => {
+                  const done = i < workoutsThisWeek;
+                  return (
+                    <span
+                      key={i}
+                      className="w-2.5 h-2.5 rounded-full"
+                      style={{
+                        background: done ? "var(--navy-900)" : "transparent",
+                        border: done ? "none" : "2px solid var(--border-strong)",
+                      }}
+                    />
+                  );
+                })}
+              </div>
+            )}
+          </div>
+          {weeklyGoal == null && (
+            <button
+              onClick={onOpenProfileEdit}
+              className="mt-3 text-xs text-navy-400 hover:text-navy-700 transition"
+            >
+              Set a weekly goal in your profile →
+            </button>
+          )}
+        </div>
+      </div>
+
+      {/* This month */}
+      <div className="mt-7">
+        <div className="text-[10px] uppercase tracking-[0.18em] text-navy-500 mono font-medium mb-2">This month</div>
+        <div className="grid grid-cols-3 gap-2">
+          <StatTile label="Volume" value={monthStats.volume.toLocaleString()} unit={monthStats.unit} />
+          <StatTile label="Sets" value={monthStats.sets.toLocaleString()} unit={null} />
+          <StatTile label="Reps" value={monthStats.reps.toLocaleString()} unit={null} />
+        </div>
+      </div>
+
+      {/* Ready to level up — compact, horizontally scrolling */}
+      {readyToBump.length > 0 && (
+        <div className="mt-7">
+          <div className="text-[10px] uppercase tracking-[0.18em] text-navy-500 mono font-medium mb-2">Ready to level up</div>
+          <div className="relative -mx-5">
+            <div className="flex gap-2 overflow-x-auto px-5 pb-1 scrollbar-hide" style={{ WebkitOverflowScrolling: "touch" }}>
+              {readyToBump.map(entry => (
+                <button
+                  key={entry.id}
+                  onClick={() => onSelectExercise && onSelectExercise(entry.exercise)}
+                  className="shrink-0 surface-2 border border-soft rounded-xl py-2 pl-3 pr-3 flex items-center gap-1.5 text-xs hover:bg-navy-50 transition"
+                  style={{ borderLeftWidth: "3px", borderLeftColor: "var(--accent)" }}
+                >
+                  <Dumbbell size={12} className="text-navy-700 shrink-0" />
+                  <span className="text-navy-900 font-medium whitespace-nowrap">{entry.exercise}</span>
+                  <ArrowUp size={12} style={{ color: "var(--accent)" }} className="shrink-0" />
+                </button>
+              ))}
+            </div>
+            {/* Soft right-edge fade so the row reads as scrollable when it overflows. */}
+            <div
+              className="absolute right-0 top-0 bottom-0 w-6 pointer-events-none"
+              style={{ background: "linear-gradient(to right, transparent, var(--bg))" }}
+            />
+          </div>
+        </div>
+      )}
 
       {/* Recent Workouts */}
       <div className="mt-8 flex items-center justify-between mb-3">
@@ -939,56 +1071,6 @@ function HomeView({ recentSessions, recentExercisesList, history, plans, exercis
       >
         <Library size={14} /> Manage exercise library
       </button>
-    </div>
-  );
-}
-
-function LevelUpAlerts({ recentExercisesList, exercises }) {
-  const libByName = useMemo(() => {
-    const m = new Map();
-    exercises.forEach(e => m.set(e.name, e));
-    return m;
-  }, [exercises]);
-
-  const readyToBump = recentExercisesList.filter(e => getProgressionStatus(e, libByName.get(e.exercise))?.status === "bump");
-  if (readyToBump.length === 0) return null;
-
-  return (
-    <div className="mt-7">
-      <div className="flex items-center gap-1.5 mb-2">
-        <Flame size={13} style={{ color: "var(--accent)" }} />
-        <div className="text-[10px] uppercase tracking-[0.18em] mono font-semibold" style={{ color: "var(--accent)" }}>
-          Time to level up
-        </div>
-      </div>
-      <div className="space-y-2">
-        {readyToBump.slice(0, 3).map(entry => {
-          const libEx = libByName.get(entry.exercise);
-          const weighted = tracksWeightFor(libEx);
-          return (
-            <div
-              key={entry.id}
-              className="w-full rounded-2xl p-4 flex items-center justify-between border"
-              style={{
-                background: "linear-gradient(135deg, #fbf3e0 0%, #fef9ee 100%)",
-                borderColor: "rgba(200, 153, 69, 0.25)",
-              }}
-            >
-              <div className="text-left">
-                <div className="font-semibold text-navy-900">{entry.exercise}</div>
-                <div className="text-xs text-navy-600 mt-0.5">
-                  {weighted ? (
-                    <>Try <span className="mono font-semibold" style={{ color: "var(--accent)" }}>{suggestedNextWeight(entry, libEx)} {entry.unit}</span> next session</>
-                  ) : (
-                    <>Hit <span className="mono font-semibold" style={{ color: "var(--accent)" }}>{suggestedNextReps(entry)}+ reps</span> next session</>
-                  )}
-                </div>
-              </div>
-              <ArrowUp size={20} style={{ color: "var(--accent)" }} />
-            </div>
-          );
-        })}
-      </div>
     </div>
   );
 }
@@ -1629,8 +1711,10 @@ function SessionDetailView({ session, entries, exercises, lastByExercise, onUpda
       <div className="mt-7">
         <div className="text-[10px] uppercase tracking-[0.18em] text-navy-500 mono font-medium mb-3">Exercises</div>
         <div className="space-y-2">
-          {displayEntries.map(entry => (
-            editing ? (
+          {displayEntries.map(entry => {
+            const libEx = exercises?.find(e => e.name === entry.exercise);
+            const leveledUp = !editing && getProgressionStatus(entry, libEx)?.status === "bump";
+            return editing ? (
               <EditableEntry
                 key={entry.id}
                 entry={entry}
@@ -1643,7 +1727,16 @@ function SessionDetailView({ session, entries, exercises, lastByExercise, onUpda
               />
             ) : (
               <div key={entry.id} className="surface border border-soft card-shadow rounded-xl p-4">
-                <div className="font-semibold text-navy-900 mb-2">{entry.exercise}</div>
+                <div className="font-semibold text-navy-900 mb-2 flex items-center gap-2">
+                  <span>{entry.exercise}</span>
+                  {leveledUp && (
+                    <span
+                      className="w-1.5 h-1.5 rounded-full shrink-0"
+                      style={{ background: "var(--accent)" }}
+                      aria-label="Earned a level up"
+                    />
+                  )}
+                </div>
                 <div className="flex items-baseline gap-2">
                   {entry.weight > 0 ? (
                     <>
@@ -1658,8 +1751,8 @@ function SessionDetailView({ session, entries, exercises, lastByExercise, onUpda
                 </div>
                 {entry.note && <div className="mt-2 text-xs text-navy-500 italic">"{entry.note}"</div>}
               </div>
-            )
-          ))}
+            );
+          })}
           {editing && displayEntries.length === 0 && (
             <div className="surface border border-dashed border-strong rounded-xl p-6 text-center text-sm text-navy-500">
               All exercises removed. The workout will be deleted when you save.
