@@ -518,7 +518,7 @@ export default function App() {
               />
             )}
             {tab === "past" && (
-              <PastView sessions={sessions} history={history} onSelectSession={(id) => pushView({ type: "session", id })} />
+              <PastView sessions={sessions} history={history} onSelectSession={(id) => pushView({ type: "session", id })} onGoHome={() => setTab("home")} />
             )}
             {tab === "plans" && (
               <PlansView plans={plans} onCreate={() => pushView({ type: "plan-edit", id: null })} onEdit={(id) => pushView({ type: "plan-edit", id })} onUse={(plan) => startWorkout(plan.exercises)} />
@@ -1214,7 +1214,7 @@ function BottomBar({ children }) {
 }
 
 // --- PAST WORKOUTS ---
-function PastView({ sessions, history, onSelectSession }) {
+function PastView({ sessions, history, onSelectSession, onGoHome }) {
   const sessionsByMonth = useMemo(() => {
     const groups = {};
     [...sessions].sort((a, b) => b.startedAt.localeCompare(a.startedAt)).forEach(s => {
@@ -1230,12 +1230,47 @@ function PastView({ sessions, history, onSelectSession }) {
     return d.getMonth() === now.getMonth() && d.getFullYear() === now.getFullYear();
   }).length;
 
+  // Real average across logged sessions, or em-dash when there's nothing to
+  // average. Was previously a hardcoded "58" placeholder that surfaced as a
+  // misleading stat for fresh accounts.
+  const avgDurationMin = useMemo(() => {
+    if (sessions.length === 0) return null;
+    const totalMs = sessions.reduce((acc, s) => {
+      const start = new Date(s.startedAt).getTime();
+      const end = new Date(s.endedAt).getTime();
+      return acc + Math.max(0, end - start);
+    }, 0);
+    return Math.round(totalMs / sessions.length / 60000);
+  }, [sessions]);
+
+  if (sessions.length === 0) {
+    return (
+      <div className="px-5 pb-28">
+        <div className="mt-20 flex flex-col items-center text-center">
+          <Dumbbell size={32} className="text-navy-300 mb-4" />
+          <h2 className="serif text-navy-900 text-xl mb-2" style={{ fontWeight: 500 }}>No workouts yet</h2>
+          <p className="text-sm text-navy-500 max-w-xs leading-relaxed">
+            Your training history will show up here. Tap Start Workout on Home to log your first one.
+          </p>
+          {onGoHome && (
+            <button
+              onClick={onGoHome}
+              className="mt-5 text-sm font-medium text-navy-700 hover:text-navy-900 underline-offset-2 hover:underline transition"
+            >
+              Start a workout
+            </button>
+          )}
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="px-5 pb-28">
       <div className="mt-5 grid grid-cols-3 gap-2">
         <StatTile label="This month" value={totalThisMonth} unit="sessions" />
         <StatTile label="Total" value={sessions.length} unit="sessions" />
-        <StatTile label="Avg duration" value="58" unit="min" />
+        <StatTile label="Avg duration" value={avgDurationMin ?? "—"} unit={avgDurationMin == null ? null : "min"} />
       </div>
 
       {Object.entries(sessionsByMonth).map(([month, list]) => (
@@ -1691,6 +1726,27 @@ function SessionStat({ label, value }) {
 
 // --- PLANS ---
 function PlansView({ plans, onCreate, onEdit, onUse }) {
+  if (plans.length === 0) {
+    return (
+      <div className="px-5 pb-28">
+        <div className="mt-20 flex flex-col items-center text-center">
+          <ListChecks size={32} className="text-navy-300 mb-4" />
+          <h2 className="serif text-navy-900 text-xl mb-2" style={{ fontWeight: 500 }}>No plans yet</h2>
+          <p className="text-sm text-navy-500 max-w-xs leading-relaxed mb-6">
+            Plans are reusable workout templates — a list of exercises you can launch in a single tap.
+          </p>
+          <button
+            onClick={onCreate}
+            className="px-5 py-3 rounded-xl text-white font-semibold text-sm transition"
+            style={{ background: "var(--navy-900)" }}
+          >
+            Create your first plan
+          </button>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="px-5 pb-28">
       <button onClick={onCreate} className="mt-5 w-full surface border border-dashed border-strong text-navy-700 py-4 rounded-2xl font-medium flex items-center justify-center gap-2 hover:bg-navy-50 transition">
@@ -1699,38 +1755,31 @@ function PlansView({ plans, onCreate, onEdit, onUse }) {
       </button>
 
       <div className="mt-6 text-[10px] uppercase tracking-[0.18em] text-navy-500 mono font-medium mb-3">Your plans</div>
-      {plans.length === 0 ? (
-        <div className="surface border border-soft rounded-xl p-8 text-center">
-          <ListChecks size={24} className="text-navy-300 mx-auto mb-2" />
-          <div className="text-sm text-navy-500">No plans yet</div>
-        </div>
-      ) : (
-        <div className="space-y-2">
-          {plans.map(plan => (
-            <div key={plan.id} className="surface border border-soft card-shadow rounded-2xl overflow-hidden">
-              <div className="p-4">
-                <div className="flex items-start justify-between gap-2">
-                  <div className="min-w-0 flex-1">
-                    <div className="font-semibold text-navy-900">{plan.name}</div>
-                    <div className="text-xs text-navy-500 mt-0.5">{plan.description}</div>
-                  </div>
-                  <button onClick={() => onEdit(plan.id)} className="text-navy-400 hover:text-navy-900 shrink-0 p-1 transition">
-                    <Edit3 size={14} />
-                  </button>
+      <div className="space-y-2">
+        {plans.map(plan => (
+          <div key={plan.id} className="surface border border-soft card-shadow rounded-2xl overflow-hidden">
+            <div className="p-4">
+              <div className="flex items-start justify-between gap-2">
+                <div className="min-w-0 flex-1">
+                  <div className="font-semibold text-navy-900">{plan.name}</div>
+                  <div className="text-xs text-navy-500 mt-0.5">{plan.description}</div>
                 </div>
-                <div className="mt-3 flex flex-wrap gap-1">
-                  {plan.exercises.map((ex, i) => (
-                    <span key={i} className="text-[10px] mono px-2 py-1 rounded-md text-navy-700" style={{ background: "var(--navy-100)" }}>{ex}</span>
-                  ))}
-                </div>
+                <button onClick={() => onEdit(plan.id)} className="text-navy-400 hover:text-navy-900 shrink-0 p-1 transition">
+                  <Edit3 size={14} />
+                </button>
               </div>
-              <button onClick={() => onUse(plan)} className="w-full border-t border-soft py-2.5 text-sm font-medium flex items-center justify-center gap-1.5 transition text-navy-900 hover:bg-navy-50" style={{ background: "var(--surface-2)" }}>
-                <Play size={12} fill="currentColor" /> Start this workout
-              </button>
+              <div className="mt-3 flex flex-wrap gap-1">
+                {plan.exercises.map((ex, i) => (
+                  <span key={i} className="text-[10px] mono px-2 py-1 rounded-md text-navy-700" style={{ background: "var(--navy-100)" }}>{ex}</span>
+                ))}
+              </div>
             </div>
-          ))}
-        </div>
-      )}
+            <button onClick={() => onUse(plan)} className="w-full border-t border-soft py-2.5 text-sm font-medium flex items-center justify-center gap-1.5 transition text-navy-900 hover:bg-navy-50" style={{ background: "var(--surface-2)" }}>
+              <Play size={12} fill="currentColor" /> Start this workout
+            </button>
+          </div>
+        ))}
+      </div>
     </div>
   );
 }
