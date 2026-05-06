@@ -434,6 +434,31 @@ export default function App() {
     return true;
   };
 
+  // Public catalog → private copy. Used from ExerciseDetailView (Customize
+  // button) and ExerciseEditView (Customize-instead-of-Save when public).
+  // Inserts a private copy of the source's editable fields, then swaps the
+  // current view for an edit screen on the new private id so the user can
+  // immediately tune the defaults. Returns the created exercise on success.
+  const customizeExerciseAndOpenEdit = async (source) => {
+    if (!source) return null;
+    const created = await addExerciseToLibrary({
+      name: source.name,
+      muscle: source.muscle,
+      equipment: source.equipment,
+      targetReps: source.targetReps,
+      unit: source.unit,
+      tracksWeight: source.tracksWeight,
+      trackingMode: source.trackingMode,
+      bumpRule: source.bumpRule,
+      increment: source.increment,
+    });
+    if (created) {
+      popView();
+      pushView({ type: "exercise-edit", id: created.id });
+    }
+    return created;
+  };
+
   const deleteExerciseFromLibrary = async (id) => {
     if (!session) return false;
     setLibrarySaveError(null);
@@ -1084,6 +1109,10 @@ export default function App() {
               <ExerciseDetailView
                 entries={history.filter(h => h.exercise === view.name).sort((a, b) => b.date.localeCompare(a.date))}
                 libEx={exercises.find(e => e.name === view.name)}
+                onEdit={(id) => pushView({ type: "exercise-edit", id })}
+                onCustomize={() => customizeExerciseAndOpenEdit(
+                  exercises.find(e => e.name === view.name)
+                )}
               />
             )}
             {view?.type === "session" && (
@@ -1143,31 +1172,11 @@ export default function App() {
                   const ok = await deleteExerciseFromLibrary(id);
                   if (ok) popView();
                 }}
-                onCustomize={async () => {
+                onCustomize={() => customizeExerciseAndOpenEdit(
                   // Look the source up at click-time so a stale closure
-                  // (e.g. exercises list re-fetched while the user was
-                  // reading) doesn't insert a copy of yesterday's row.
-                  const source = exercises.find(e => e.id === view.id);
-                  if (!source) return;
-                  const created = await addExerciseToLibrary({
-                    name: source.name,
-                    muscle: source.muscle,
-                    equipment: source.equipment,
-                    targetReps: source.targetReps,
-                    unit: source.unit,
-                    tracksWeight: source.tracksWeight,
-                    trackingMode: source.trackingMode,
-                    bumpRule: source.bumpRule,
-                    increment: source.increment,
-                  });
-                  if (created) {
-                    // Swap the public read-only view for an edit view on
-                    // the brand-new private copy. Pop+push (rather than
-                    // pushing on top) keeps the back stack clean.
-                    popView();
-                    pushView({ type: "exercise-edit", id: created.id });
-                  }
-                }}
+                  // doesn't insert a copy of yesterday's row.
+                  exercises.find(e => e.id === view.id)
+                )}
                 onCancel={popView}
               />
             )}
@@ -3443,79 +3452,146 @@ function HealthView() {
 }
 
 // --- EXERCISE DETAIL ---
-function ExerciseDetailView({ entries, libEx }) {
-  if (entries.length === 0) return null;
-  const latest = entries[0];
-  const prog = getProgressionStatus(latest, libEx);
+function ExerciseDetailView({ entries, libEx, onEdit, onCustomize }) {
+  // libEx absent (e.g. an exercise referenced by history but since deleted)
+  // — render a minimal explanation rather than the full layout, since
+  // there's no metadata to show.
+  if (!libEx) {
+    return (
+      <div className="px-5 pb-20">
+        <div className="mt-8 surface border border-soft card-shadow rounded-2xl p-5 text-sm text-navy-600 leading-relaxed">
+          This exercise is no longer in your library.
+        </div>
+      </div>
+    );
+  }
+  const isPublic = libEx.visibility === "public";
+  const isTime = isTimeTracked(libEx);
+  const targetNoun = isTime ? "seconds" : "reps";
   const suffix = setUnitSuffix(libEx);
+  const bumpRuleLabel = {
+    all: "Every set hits the top",
+    majority: "Most sets hit the top",
+    any: "Any single set hits the top",
+  }[libEx.bumpRule || "all"];
+  const latest = entries[0] || null;
+  const prog = latest ? getProgressionStatus(latest, libEx) : null;
 
   return (
     <div className="px-5 pb-20">
-      <div className="mt-5 rounded-2xl p-5 card-shadow-lg" style={{ background: "linear-gradient(135deg, var(--navy-900) 0%, var(--navy-700) 100%)" }}>
-        <div className="flex items-center gap-2 mb-3">
-          <Clock size={12} className="text-white/60" />
-          <div className="text-[10px] uppercase tracking-[0.18em] text-white/60 mono font-medium">Last time · {formatDate(latest.date)}</div>
+      {/* About card — always rendered, even when there's no history. This
+          is the screen's primary content for any exercise the user hasn't
+          logged yet (most relevant for the public catalog). */}
+      <div className="mt-5">
+        <div className="text-[10px] uppercase tracking-[0.18em] text-navy-500 mono font-medium mb-3">Defaults</div>
+        <div className="surface border border-soft card-shadow rounded-2xl divide-y" style={{ borderColor: "var(--border)" }}>
+          <DetailRow icon={Activity} label="Muscle group" value={libEx.muscle || "—"} />
+          <DetailRow icon={Dumbbell} label="Equipment" value={libEx.equipment || "—"} />
+          <DetailRow icon={Clock} label="Tracking mode" value={isTime ? "Time" : "Reps"} />
+          <DetailRow
+            icon={Target}
+            label={isTime ? "Target time range" : "Target rep range"}
+            value={`${libEx.targetReps[0]}–${libEx.targetReps[1]} ${targetNoun}`}
+          />
+          <DetailRow icon={Scale} label="Weight" value={tracksWeightFor(libEx) ? `Uses weight (+${libEx.increment ?? 5} ${libEx.unit})` : "Bodyweight"} />
+          <DetailRow icon={TrendingUp} label="Progression rule" value={bumpRuleLabel} />
         </div>
-        <div className="flex items-baseline gap-3">
-          {latest.weight > 0 ? (
-            <>
-              <div className="text-5xl font-semibold tracking-tight mono text-white">{latest.weight}</div>
-              <div className="text-white/60 text-lg mono">{latest.unit}</div>
-            </>
-          ) : (
-            <div className="text-5xl font-semibold tracking-tight mono text-white">Bodyweight</div>
-          )}
-        </div>
-        <div className="mt-4 flex gap-2">
-          {latest.reps.map((r, i) => (
-            <div key={i} className="flex-1 rounded-lg py-2.5 text-center" style={{ background: "rgba(255,255,255,0.08)" }}>
-              <div className="text-[9px] uppercase tracking-wider text-white/50 mono">Set {i + 1}</div>
-              <div className="text-xl font-semibold mt-0.5 mono text-white">{r}{suffix}</div>
-            </div>
-          ))}
-        </div>
-        {latest.note && <div className="mt-3 text-xs text-white/70 italic">"{latest.note}"</div>}
-        {prog && (
-          <div className="mt-4 rounded-lg p-3 flex items-start gap-2.5" style={{ background: "rgba(255,255,255,0.08)" }}>
-            {prog.status === "bump" && <Flame size={14} style={{ color: "#f0c674" }} className="mt-0.5 shrink-0" />}
-            {prog.status === "hold" && <Minus size={14} className="text-white/60 mt-0.5 shrink-0" />}
-            {prog.status === "progress" && <TrendingUp size={14} style={{ color: "#86d99e" }} className="mt-0.5 shrink-0" />}
-            <div className="text-xs text-white/90 leading-relaxed">{prog.message}</div>
-          </div>
-        )}
       </div>
 
-      <div className="mt-7">
-        <div className="text-[10px] uppercase tracking-[0.18em] text-navy-500 mono font-medium mb-3">History</div>
-        <div className="space-y-2">
-          {entries.map(entry => {
-            const total = entry.reps.reduce((a, b) => a + b, 0);
-            const setsStr = entry.reps.map(r => `${r}${suffix}`).join(" · ");
-            return (
-              <div key={entry.id} className="surface border border-soft card-shadow rounded-xl p-3.5">
-                <div className="flex items-center justify-between mb-2">
-                  <div className="text-xs text-navy-500 mono">{formatDate(entry.date)}</div>
-                  {/* Volume tile is meaningless for time-tracked sets — they're seconds. */}
-                  {!isTimeTracked(libEx) && <div className="text-[10px] text-navy-300 mono">vol {total}</div>}
-                </div>
-                <div className="flex items-baseline gap-2">
-                  {entry.weight > 0 ? (
-                    <>
-                      <div className="text-2xl font-semibold mono text-navy-900">{entry.weight}</div>
-                      <div className="text-navy-400 text-xs mono">{entry.unit}</div>
-                      <div className="text-navy-300 mono">×</div>
-                      <div className="text-navy-700 mono text-sm">{setsStr}</div>
-                    </>
-                  ) : (
-                    <div className="text-2xl font-semibold mono text-navy-900">{setsStr}</div>
-                  )}
-                </div>
-                {entry.note && <div className="mt-2 text-xs text-navy-500 italic">"{entry.note}"</div>}
-              </div>
-            );
-          })}
+      {/* Edit / Customize action. Public catalog rows show Customize (which
+          inserts a private copy and opens its edit form); private rows show
+          Edit. */}
+      <button
+        onClick={() => isPublic ? onCustomize?.() : onEdit?.(libEx.id)}
+        className="mt-4 w-full text-white py-3 rounded-xl font-semibold text-sm flex items-center justify-center gap-2 transition"
+        style={{ background: "var(--navy-900)" }}
+      >
+        {isPublic ? <><Sparkles size={14} /> Customize</> : <><Edit3 size={14} /> Edit defaults</>}
+      </button>
+
+      {isPublic && (
+        <div className="mt-3 text-xs text-navy-500 leading-relaxed">
+          This is part of Spotter's catalog. To change the defaults, customize a copy you own.
         </div>
-      </div>
+      )}
+
+      {/* Last-time hero + history list — only when the user has logged
+          this exercise at least once. */}
+      {latest && (
+        <div className="mt-7 rounded-2xl p-5 card-shadow-lg" style={{ background: "linear-gradient(135deg, var(--navy-900) 0%, var(--navy-700) 100%)" }}>
+          <div className="flex items-center gap-2 mb-3">
+            <Clock size={12} className="text-white/60" />
+            <div className="text-[10px] uppercase tracking-[0.18em] text-white/60 mono font-medium">Last time · {formatDate(latest.date)}</div>
+          </div>
+          <div className="flex items-baseline gap-3">
+            {latest.weight > 0 ? (
+              <>
+                <div className="text-5xl font-semibold tracking-tight mono text-white">{latest.weight}</div>
+                <div className="text-white/60 text-lg mono">{latest.unit}</div>
+              </>
+            ) : (
+              <div className="text-5xl font-semibold tracking-tight mono text-white">Bodyweight</div>
+            )}
+          </div>
+          <div className="mt-4 flex gap-2">
+            {latest.reps.map((r, i) => (
+              <div key={i} className="flex-1 rounded-lg py-2.5 text-center" style={{ background: "rgba(255,255,255,0.08)" }}>
+                <div className="text-[9px] uppercase tracking-wider text-white/50 mono">Set {i + 1}</div>
+                <div className="text-xl font-semibold mt-0.5 mono text-white">{r}{suffix}</div>
+              </div>
+            ))}
+          </div>
+          {latest.note && <div className="mt-3 text-xs text-white/70 italic">"{latest.note}"</div>}
+          {prog && (
+            <div className="mt-4 rounded-lg p-3 flex items-start gap-2.5" style={{ background: "rgba(255,255,255,0.08)" }}>
+              {prog.status === "bump" && <Flame size={14} style={{ color: "#f0c674" }} className="mt-0.5 shrink-0" />}
+              {prog.status === "hold" && <Minus size={14} className="text-white/60 mt-0.5 shrink-0" />}
+              {prog.status === "progress" && <TrendingUp size={14} style={{ color: "#86d99e" }} className="mt-0.5 shrink-0" />}
+              <div className="text-xs text-white/90 leading-relaxed">{prog.message}</div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {entries.length > 0 && (
+        <div className="mt-7">
+          <div className="text-[10px] uppercase tracking-[0.18em] text-navy-500 mono font-medium mb-3">History</div>
+          <div className="space-y-2">
+            {entries.map(entry => {
+              const total = entry.reps.reduce((a, b) => a + b, 0);
+              const setsStr = entry.reps.map(r => `${r}${suffix}`).join(" · ");
+              return (
+                <div key={entry.id} className="surface border border-soft card-shadow rounded-xl p-3.5">
+                  <div className="flex items-center justify-between mb-2">
+                    <div className="text-xs text-navy-500 mono">{formatDate(entry.date)}</div>
+                    {/* Volume tile is meaningless for time-tracked sets — they're seconds. */}
+                    {!isTime && <div className="text-[10px] text-navy-300 mono">vol {total}</div>}
+                  </div>
+                  <div className="flex items-baseline gap-2">
+                    {entry.weight > 0 ? (
+                      <>
+                        <div className="text-2xl font-semibold mono text-navy-900">{entry.weight}</div>
+                        <div className="text-navy-400 text-xs mono">{entry.unit}</div>
+                        <div className="text-navy-300 mono">×</div>
+                        <div className="text-navy-700 mono text-sm">{setsStr}</div>
+                      </>
+                    ) : (
+                      <div className="text-2xl font-semibold mono text-navy-900">{setsStr}</div>
+                    )}
+                  </div>
+                  {entry.note && <div className="mt-2 text-xs text-navy-500 italic">"{entry.note}"</div>}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      {entries.length === 0 && (
+        <div className="mt-7 surface-2 border border-dashed border-strong rounded-xl p-5 text-center text-sm text-navy-500">
+          No sessions logged yet. Start a workout to see your history here.
+        </div>
+      )}
     </div>
   );
 }
