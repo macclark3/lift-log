@@ -537,8 +537,11 @@ export default function App() {
           <SessionDetailView
             session={sessions.find(s => s.id === view.id)}
             entries={history.filter(h => h.workoutId === view.id).sort((a,b) => a.date.localeCompare(b.date))}
+            exercises={exercises}
+            lastByExercise={lastByExercise}
             onUpdate={updateSession}
             onDelete={deleteSession}
+            onCreateExercise={addExerciseToLibrary}
           />
         )}
         {view?.type === "plan-edit" && (
@@ -1284,16 +1287,21 @@ function StatTile({ label, value, unit }) {
   );
 }
 
-function SessionDetailView({ session, entries, onUpdate, onDelete }) {
+function SessionDetailView({ session, entries, exercises, lastByExercise, onUpdate, onDelete, onCreateExercise }) {
   const [editing, setEditing] = useState(false);
   const [draftName, setDraftName] = useState(session?.name || "");
   const [draftEntries, setDraftEntries] = useState(entries);
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const [showPicker, setShowPicker] = useState(false);
+  // When non-null, open the full ExerciseEditView modal pre-filled with this name.
+  const [pendingNewExerciseName, setPendingNewExerciseName] = useState(null);
 
   // Reset drafts when session/entries change or when leaving edit mode
   useEffect(() => {
     setDraftName(session?.name || "");
     setDraftEntries(entries);
+    setShowPicker(false);
+    setPendingNewExerciseName(null);
   }, [session?.id, editing]);
 
   // Auto-cancel delete confirmation
@@ -1335,6 +1343,40 @@ function SessionDetailView({ session, entries, onUpdate, onDelete }) {
 
   const removeEntry = (entryId) => {
     setDraftEntries(draftEntries.filter(e => e.id !== entryId));
+  };
+
+  // Build a fresh draft entry for an exercise being added retroactively. Uses
+  // the session's startedAt as the entry date so it sorts alongside the
+  // existing entries; reps starts as [0] (one empty set) so EditableEntry
+  // shows a row to fill in. Library lookup gives us the right unit and
+  // targetReps; falls back to sensible defaults if the library entry is
+  // somehow missing.
+  const buildDraftEntry = (exerciseName, libEx) => ({
+    id: Date.now(),
+    date: session.startedAt,
+    exercise: exerciseName,
+    weight: 0,
+    reps: [0],
+    targetReps: libEx?.targetReps || [8, 12],
+    unit: libEx?.unit || "lb",
+    workoutId: session.id,
+  });
+
+  const addExistingExercise = (exerciseName) => {
+    const libEx = exercises?.find(e => e.name === exerciseName);
+    setDraftEntries([...draftEntries, buildDraftEntry(exerciseName, libEx)]);
+    setShowPicker(false);
+  };
+
+  // Open the full editor modal pre-filled with the typed name; defer creation
+  // until Save. On Save, the new exercise is added to the library AND a new
+  // draft entry is appended to the session.
+  const handleCreateNewFromPicker = (newName) => setPendingNewExerciseName(newName);
+  const handleSaveNewExerciseFromPicker = (payload) => {
+    const created = onCreateExercise(payload);
+    setDraftEntries([...draftEntries, buildDraftEntry(created.name, created)]);
+    setPendingNewExerciseName(null);
+    setShowPicker(false);
   };
 
   const handleSave = () => {
@@ -1448,8 +1490,33 @@ function SessionDetailView({ session, entries, onUpdate, onDelete }) {
               All exercises removed. The workout will be deleted when you save.
             </div>
           )}
+          {editing && (
+            <button
+              onClick={() => setShowPicker(true)}
+              className="w-full surface-2 border border-dashed border-strong text-navy-600 py-3.5 rounded-xl font-medium text-sm flex items-center justify-center gap-2 hover:bg-navy-50 transition"
+            >
+              <Plus size={16} /> Add exercise
+            </button>
+          )}
         </div>
       </div>
+
+      {showPicker && (
+        <ExerciseSearchSheet
+          exercises={exercises || []}
+          lastByExercise={lastByExercise || new Map()}
+          onPick={addExistingExercise}
+          onCreateNew={handleCreateNewFromPicker}
+          onClose={() => setShowPicker(false)}
+        />
+      )}
+      {pendingNewExerciseName !== null && (
+        <ExerciseEditModal
+          initialName={pendingNewExerciseName}
+          onSave={handleSaveNewExerciseFromPicker}
+          onCancel={() => setPendingNewExerciseName(null)}
+        />
+      )}
 
       {/* Save/cancel bar in edit mode */}
       {editing && (
