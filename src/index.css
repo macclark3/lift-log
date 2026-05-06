@@ -31,11 +31,15 @@ input, textarea, select {
 /* Mobile-only landscape lock: the PWA manifest already requests portrait
    orientation, but Safari / Chrome don't always honor it (and this also
    covers the case where the app isn't installed yet). Hide the app and
-   show a small "rotate" message on small screens held landscape. The
-   768px width cap means desktop landscape still works fine for dev. */
+   show a small "rotate" message on phone-sized devices held landscape.
+   The trigger is max-height (not max-width) because every modern iPhone
+   in landscape is wider than 768px — a width cap never matched on the
+   actual hardware. Phone landscape heights are all under ~500px while
+   iPad mini in landscape is 768px tall, so this cleanly distinguishes
+   phone-in-landscape from tablet/desktop. */
 .rotate-warning { display: none; }
 
-@media (max-width: 768px) and (orientation: landscape) {
+@media (max-height: 500px) and (orientation: landscape) {
   .app-content { display: none; }
   .rotate-warning { display: flex; }
 }

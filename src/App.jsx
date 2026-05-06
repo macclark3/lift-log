@@ -2780,6 +2780,28 @@ function PlanEditView({ plan, exercises, lastByExercise, saveError, onSave, onDe
 // --- SHARED EXERCISE SEARCH SHEET ---
 function ExerciseSearchSheet({ exercises, lastByExercise, excluded = [], onPick, onCreateNew, onClose }) {
   const [search, setSearch] = useState("");
+  // iOS Safari and iOS PWAs don't resize the layout viewport when the
+  // keyboard opens — bottom:0 fixed/absolute elements stay anchored to
+  // the layout viewport's bottom, which is buried behind the keyboard.
+  // Track the keyboard height via the visualViewport API and shift the
+  // sheet up by that amount so its bottom edge (and the pinned Create
+  // row) sit just above the keyboard.
+  const [keyboardOffset, setKeyboardOffset] = useState(0);
+  useEffect(() => {
+    const vv = typeof window !== "undefined" ? window.visualViewport : null;
+    if (!vv) return;
+    const update = () => {
+      const offset = Math.max(0, window.innerHeight - vv.height - vv.offsetTop);
+      setKeyboardOffset(offset);
+    };
+    update();
+    vv.addEventListener("resize", update);
+    vv.addEventListener("scroll", update);
+    return () => {
+      vv.removeEventListener("resize", update);
+      vv.removeEventListener("scroll", update);
+    };
+  }, []);
 
   const filtered = useMemo(() => {
     return exercises
@@ -2792,7 +2814,19 @@ function ExerciseSearchSheet({ exercises, lastByExercise, excluded = [], onPick,
 
   return (
     <div className="fixed inset-0 z-30 backdrop-blur-sm" style={{ background: "rgba(10, 31, 61, 0.35)" }} onClick={onClose}>
-      <div className="absolute inset-x-0 bottom-0 max-w-md mx-auto surface border-t border-soft rounded-t-3xl flex flex-col" style={{ maxHeight: "85vh" }} onClick={e => e.stopPropagation()}>
+      <div
+        className="absolute inset-x-0 max-w-md mx-auto surface border-t border-soft rounded-t-3xl flex flex-col"
+        style={{
+          // Shift the sheet up by the keyboard height so its bottom
+          // (where the Create row sits) is visible above the keyboard.
+          bottom: keyboardOffset,
+          // Subtract the keyboard offset from max-height too, otherwise
+          // the sheet can still extend off the top of the visible area
+          // when the keyboard is open.
+          maxHeight: `calc(85vh - ${keyboardOffset}px)`,
+        }}
+        onClick={e => e.stopPropagation()}
+      >
         <div className="p-5 pb-3 shrink-0">
           <div className="w-10 h-1 rounded-full mx-auto mb-5" style={{ background: "var(--border-strong)" }} />
           <div className="relative">
