@@ -152,6 +152,8 @@ These are real product directions Mac is interested in but explicitly deferred. 
 
 - **Apple Health integration** — listed elsewhere; reiterating here that this requires a Capacitor or native iOS wrapper, not just PWA. Don't try to bolt it on inside the PWA.
 
+- **Side imbalance detection (v2 of per-side tracking).** Once users have logged enough per-side reps, surface insights like "your left side averages 15% fewer reps than your right" or "your right side has consistently done 5lb more on lateral raises." This builds on the per-side data model already in place. Could appear as a small section in past session detail ("imbalance noted: -15% on left side this session") or as a profile-level summary over time. Defer until users actually have per-side data accumulated — meaningless without 4-6 weeks of logged sessions.
+
 - **AI-generated workout plans from natural-language goals.** Replace (or supplement) the simple "Goal" text field with the ability for users to describe their goals in plain language ("I want to put on size in my arms," "training for a wedding in 6 months," "rebuilding after knee surgery"). The app would call an LLM server-side to generate a personalized multi-week plan that gets added to their Plans tab as regular plan(s).
 
   Required infrastructure:

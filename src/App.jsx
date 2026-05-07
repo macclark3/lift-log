@@ -81,6 +81,41 @@ function setUnitSuffix(libEx) {
   return isTimeTracked(libEx) ? "s" : "";
 }
 
+// Per-side: when true, history stores reps_left and reps_right (empty
+// reps array), and the active workout / display surfaces split L/R per
+// set. Mutually exclusive with time tracking — the form blocks enabling
+// both. Defaults to false for legacy / missing values.
+function isPerSide(libEx) {
+  return libEx?.perSide === true;
+}
+
+// Set count for a history entry, regardless of per-side vs single-side
+// storage. For per-side, repsLeft and repsRight should be the same
+// length (one weight per set, two rep numbers per set); fall back to
+// the longer of the two if they ever drift.
+function entrySetCount(entry, libEx) {
+  if (isPerSide(libEx)) {
+    return Math.max(
+      (entry.repsLeft || []).length,
+      (entry.repsRight || []).length,
+    );
+  }
+  return (entry.reps || []).length;
+}
+
+// Total reps across all sets in an entry. Per-side sums L + R per set
+// (a set with L:12 R:11 contributes 23). Non-per-side sums the reps
+// array. Used by every "total reps" / "volume" calc — per spec, sets
+// count as one each but reps add both sides.
+function entryRepTotal(entry, libEx) {
+  if (isPerSide(libEx)) {
+    const left = (entry.repsLeft || []).reduce((a, b) => a + (b || 0), 0);
+    const right = (entry.repsRight || []).reduce((a, b) => a + (b || 0), 0);
+    return left + right;
+  }
+  return (entry.reps || []).reduce((a, b) => a + (b || 0), 0);
+}
+
 // Progression rule is configurable per exercise:
 //   "all"    – every set must hit the top of the rep range (conservative, good for compounds)
 //   "any"    – any single set hitting the top is enough (aggressive, good for isolation)
@@ -89,11 +124,34 @@ function getProgressionStatus(entry, libEx) {
   if (!entry) return null;
   const [min, max] = entry.targetReps;
   const rule = libEx?.bumpRule || entry.bumpRule || "all";
-  const sets = entry.reps.length;
-  const hitTop = entry.reps.filter(r => r >= max).length;
-  const anyBelowMin = entry.reps.some(r => r < min);
   const weighted = tracksWeightFor(libEx);
   const goal = weighted ? "bump the weight" : "push for more reps";
+  const perSide = isPerSide(libEx);
+
+  // For per-side, a "set hits the top" only when BOTH sides reached the
+  // target — a one-sided strong rep doesn't count as bump-worthy. "Below
+  // min" is also gated on either side dipping. The set count is the
+  // length of either array (they're kept in lockstep).
+  const sets = perSide
+    ? Math.max((entry.repsLeft || []).length, (entry.repsRight || []).length)
+    : entry.reps.length;
+  let hitTop;
+  let anyBelowMin;
+  if (perSide) {
+    const left = entry.repsLeft || [];
+    const right = entry.repsRight || [];
+    hitTop = 0;
+    anyBelowMin = false;
+    for (let i = 0; i < sets; i++) {
+      const l = left[i] || 0;
+      const r = right[i] || 0;
+      if (l >= max && r >= max) hitTop++;
+      if (l < min || r < min) anyBelowMin = true;
+    }
+  } else {
+    hitTop = entry.reps.filter(r => r >= max).length;
+    anyBelowMin = entry.reps.some(r => r < min);
+  }
 
   let shouldBump = false;
   let bumpMessage = "";
@@ -231,6 +289,10 @@ function mapRowToExercise(row) {
     // Default 'reps' so rows that predate this column behave exactly as
     // they did before (and the DB CHECK constraint keeps us honest).
     trackingMode: row.tracking_mode === "time" ? "time" : "reps",
+    // Per-side splits each set's reps into a left and right count.
+    // Mutually exclusive with time tracking — the edit form enforces
+    // that at the UI layer.
+    perSide: row.per_side === true,
     // Ownership signals. Public catalog rows have user_id NULL and
     // visibility 'public'; the user can't edit/delete them, only
     // "Customize" (insert a private copy).
@@ -254,6 +316,7 @@ function exerciseToDbRow(ex, userId) {
     increment: ex.increment ?? null,
     tracks_weight: ex.tracksWeight !== false,
     tracking_mode: ex.trackingMode === "time" ? "time" : "reps",
+    per_side: ex.perSide === true,
     visibility: "private",
   };
 }
@@ -275,6 +338,7 @@ function exerciseToDbPatch(patch) {
   if ("increment" in patch) out.increment = patch.increment ?? null;
   if ("tracksWeight" in patch) out.tracks_weight = patch.tracksWeight !== false;
   if ("trackingMode" in patch) out.tracking_mode = patch.trackingMode === "time" ? "time" : "reps";
+  if ("perSide" in patch) out.per_side = patch.perSide === true;
   return out;
 }
 
@@ -330,11 +394,42 @@ function mapRowToHistoryEntry(row) {
     exercise: row.exercise_name,
     weight: row.weight ?? 0,
     reps: row.reps || [],
+    // Per-side rows have empty `reps` and populated repsLeft/repsRight.
+    // Non-per-side rows have empty arrays here (the column defaults to
+    // '{}' so they're always present even on legacy rows).
+    repsLeft: row.reps_left || [],
+    repsRight: row.reps_right || [],
     targetReps: [row.target_reps_min ?? 0, row.target_reps_max ?? 0],
     unit: row.unit || "lb",
     note: row.note || undefined,
     date: row.logged_at,
   };
+}
+
+// Active-workout entries carry padded zeros so the SetRow always has a
+// row to tap. On finish (or session-edit save) those empty trailing
+// zeros need to drop out before they hit the DB. For single-side that's
+// just `reps.filter(r => r > 0)`; for per-side a set survives when
+// EITHER side has a value, and both arrays are trimmed in lockstep so
+// the indexes still line up.
+function trimEntryForPersistence(ex) {
+  if (ex.perSide) {
+    const left = ex.repsLeft || [];
+    const right = ex.repsRight || [];
+    const len = Math.max(left.length, right.length);
+    const newL = [];
+    const newR = [];
+    for (let i = 0; i < len; i++) {
+      const l = left[i] || 0;
+      const r = right[i] || 0;
+      if (l > 0 || r > 0) {
+        newL.push(l);
+        newR.push(r);
+      }
+    }
+    return { reps: [], repsLeft: newL, repsRight: newR };
+  }
+  return { reps: (ex.reps || []).filter(r => r > 0), repsLeft: [], repsRight: [] };
 }
 
 function historyEntryToDbRow(entry, userId, sessionId) {
@@ -344,6 +439,8 @@ function historyEntryToDbRow(entry, userId, sessionId) {
     exercise_name: entry.exercise,
     weight: entry.weight ?? 0,
     reps: entry.reps || [],
+    reps_left: entry.repsLeft || [],
+    reps_right: entry.repsRight || [],
     target_reps_min: entry.targetReps?.[0] ?? null,
     target_reps_max: entry.targetReps?.[1] ?? null,
     unit: entry.unit || "lb",
@@ -499,6 +596,7 @@ export default function App() {
       unit: source.unit,
       tracksWeight: source.tracksWeight,
       trackingMode: source.trackingMode,
+      perSide: source.perSide === true,
       bumpRule: source.bumpRule,
       increment: source.increment,
     });
@@ -603,23 +701,41 @@ export default function App() {
       const libEx = exercises.find(e => e.name === entry.exercise);
       const weighted = tracksWeightFor(libEx);
       const mode = trackingModeFor(libEx);
+      const perSide = isPerSide(libEx);
+      // Per-side entries store reps in repsLeft / repsRight (the legacy
+      // reps array is empty); single-side stores in reps. Whichever
+      // applies, preserve the values verbatim — pad to length 1 so the
+      // active workout always has a row to render.
+      const resumedReps = perSide
+        ? []
+        : (entry.reps && entry.reps.length > 0 ? [...entry.reps] : [0]);
+      const resumedLeft = perSide
+        ? (entry.repsLeft && entry.repsLeft.length > 0 ? [...entry.repsLeft] : [0])
+        : [];
+      const resumedRight = perSide
+        ? (entry.repsRight && entry.repsRight.length > 0 ? [...entry.repsRight] : [0])
+        : [];
       return {
         exercise: entry.exercise,
+        description: libEx?.description || null,
         weight: entry.weight ?? 0,
         // Suppress the "last time" hero — for resumed entries, the user
         // is already looking at their own logged values; the most-recent
         // history match is this same entry, which would be redundant.
         lastWeight: null,
         lastReps: [],
+        lastRepsLeft: [],
+        lastRepsRight: [],
         lastDate: null,
         targetReps: libEx?.targetReps || entry.targetReps || [8, 12],
         unit: libEx?.unit || entry.unit || "lb",
         tracksWeight: weighted,
         trackingMode: mode,
+        perSide,
         increment: libEx?.increment ?? 5,
-        // Existing reps preserved verbatim, padded to a min of 1 so the
-        // SetRow always has a row to interact with.
-        reps: entry.reps && entry.reps.length > 0 ? [...entry.reps] : [0],
+        reps: resumedReps,
+        repsLeft: resumedLeft,
+        repsRight: resumedRight,
         note: entry.note || "",
         bumped: false,
         holdLonger: false,
@@ -667,7 +783,12 @@ export default function App() {
   // failure (activeWorkout is preserved so the user can retry).
   const finishWorkout = async (workoutName) => {
     if (!activeWorkout) return false;
-    const completed = activeWorkout.exercises.filter(ex => ex.reps.some(r => r > 0));
+    // "Has at least one logged set" check: per-side counts a set as
+    // logged when either L or R is > 0; single-side keeps the existing
+    // reps > 0 rule. Cleaner trimming happens per-row below.
+    const completed = activeWorkout.exercises.filter(ex => ex.perSide
+      ? (ex.repsLeft || []).some(r => r > 0) || (ex.repsRight || []).some(r => r > 0)
+      : (ex.reps || []).some(r => r > 0));
     const trimmedName = (workoutName && workoutName.trim()) || "Workout";
 
     if (completed.length === 0 || !session) {
@@ -694,15 +815,20 @@ export default function App() {
       const baseTime = new Date(startedAt).getTime();
       // Build the same shape historyEntryToDbRow expects — id is unset
       // since the rows will be reinserted with fresh ids.
-      const updatedEntries = completed.map((ex, i) => ({
-        date: new Date(baseTime + i * 60000).toISOString(),
-        exercise: ex.exercise,
-        weight: ex.weight ?? 0,
-        reps: ex.reps.filter(r => r > 0),
-        targetReps: ex.targetReps,
-        unit: ex.unit || "lb",
-        note: ex.note || undefined,
-      }));
+      const updatedEntries = completed.map((ex, i) => {
+        const trimmed = trimEntryForPersistence(ex);
+        return {
+          date: new Date(baseTime + i * 60000).toISOString(),
+          exercise: ex.exercise,
+          weight: ex.weight ?? 0,
+          reps: trimmed.reps,
+          repsLeft: trimmed.repsLeft,
+          repsRight: trimmed.repsRight,
+          targetReps: ex.targetReps,
+          unit: ex.unit || "lb",
+          note: ex.note || undefined,
+        };
+      });
       const ok = await updateSession(
         sessionId,
         { name: trimmedName, startedAt, endedAt },
@@ -737,18 +863,23 @@ export default function App() {
     // entry's logged_at by a minute so they sort in the order they were
     // logged (matches the original local-only behavior).
     const baseTime = new Date(startedAt).getTime();
-    const historyRows = completed.map((ex, i) => ({
-      user_id: userId,
-      session_id: sessionRow.id,
-      exercise_name: ex.exercise,
-      weight: ex.weight ?? 0,
-      reps: ex.reps.filter(r => r > 0),
-      target_reps_min: ex.targetReps?.[0] ?? null,
-      target_reps_max: ex.targetReps?.[1] ?? null,
-      unit: ex.unit || "lb",
-      note: ex.note || null,
-      logged_at: new Date(baseTime + i * 60000).toISOString(),
-    }));
+    const historyRows = completed.map((ex, i) => {
+      const trimmed = trimEntryForPersistence(ex);
+      return {
+        user_id: userId,
+        session_id: sessionRow.id,
+        exercise_name: ex.exercise,
+        weight: ex.weight ?? 0,
+        reps: trimmed.reps,
+        reps_left: trimmed.repsLeft,
+        reps_right: trimmed.repsRight,
+        target_reps_min: ex.targetReps?.[0] ?? null,
+        target_reps_max: ex.targetReps?.[1] ?? null,
+        unit: ex.unit || "lb",
+        note: ex.note || null,
+        logged_at: new Date(baseTime + i * 60000).toISOString(),
+      };
+    });
 
     const { data: insertedHistory, error: historyErr } = await supabase
       .from("history")
@@ -1755,9 +1886,12 @@ function HomeView({ recentSessions, recentExercisesList, sessions, history, plan
     let reps = 0;
     (history || []).forEach(entry => {
       if (new Date(entry.date).getTime() < monthStart) return;
-      sets += entry.reps.length;
-      if (isTimeTracked(libByName.get(entry.exercise))) return;
-      const entryReps = entry.reps.reduce((a, b) => a + b, 0);
+      const lib = libByName.get(entry.exercise);
+      // Each set counts once regardless of per-side; per-side reps sum
+      // both arms (12 L + 11 R = 23 reps); volume is weight × that sum.
+      sets += entrySetCount(entry, lib);
+      if (isTimeTracked(lib)) return;
+      const entryReps = entryRepTotal(entry, lib);
       reps += entryReps;
       if (!entry.weight || entry.weight <= 0) return;
       let weight = entry.weight;
@@ -1927,7 +2061,10 @@ function HomeView({ recentSessions, recentExercisesList, sessions, history, plan
         {recentSessions.slice(0, 5).map(session => {
           const entries = history.filter(h => h.workoutId === session.id);
           const duration = Math.floor((new Date(session.endedAt) - new Date(session.startedAt)) / 60000);
-          const totalSets = entries.reduce((acc, e) => acc + e.reps.length, 0);
+          // Per-side entries have an empty `reps` and populated repsLeft —
+          // fall back to whichever has length so the count is right
+          // without needing the library here.
+          const totalSets = entries.reduce((acc, e) => acc + ((e.repsLeft || []).length || (e.reps || []).length), 0);
           return (
             <button
               key={session.id}
@@ -2106,6 +2243,7 @@ function ExerciseEditView({ exercise, initialName, defaultUnit = "lb", saveError
   const [unit, setUnit] = useState(exercise?.unit || defaultUnit);
   const [tracksWeight, setTracksWeight] = useState(exercise ? exercise.tracksWeight !== false : true);
   const [trackingMode, setTrackingMode] = useState(exercise?.trackingMode === "time" ? "time" : "reps");
+  const [perSide, setPerSide] = useState(exercise?.perSide === true);
   const [bumpRule, setBumpRule] = useState(exercise?.bumpRule || "all");
   const [increment, setIncrement] = useState(exercise?.increment ?? 5);
   // Async guard: Customize hits Supabase to insert a private copy and
@@ -2174,10 +2312,20 @@ function ExerciseEditView({ exercise, initialName, defaultUnit = "lb", saveError
           </div>
         </Field>
 
-        <Field label="Tracking mode" hint="Time-tracked exercises log seconds per set instead of reps. Stats math skips them for volume/reps but still counts the sets.">
+        <Field
+          label="Tracking mode"
+          hint={perSide
+            ? "Time tracking isn't available with per-side enabled. Switch to Single side to allow Time mode."
+            : "Time-tracked exercises log seconds per set instead of reps. Stats math skips them for volume/reps but still counts the sets."}
+        >
           <div className="flex gap-1.5">
             <FilterChip active={!isTime} onClick={() => setTrackingMode("reps")}>Reps</FilterChip>
-            <FilterChip active={isTime} onClick={() => setTrackingMode("time")}>Time</FilterChip>
+            <FilterChip
+              active={isTime}
+              onClick={() => !perSide && setTrackingMode("time")}
+            >
+              Time
+            </FilterChip>
           </div>
         </Field>
 
@@ -2201,6 +2349,34 @@ function ExerciseEditView({ exercise, initialName, defaultUnit = "lb", saveError
           <div className="flex gap-1.5">
             <FilterChip active={tracksWeight} onClick={() => setTracksWeight(true)}>Uses weight</FilterChip>
             <FilterChip active={!tracksWeight} onClick={() => setTracksWeight(false)}>Bodyweight</FilterChip>
+          </div>
+        </Field>
+
+        <Field
+          label="Per-side tracking"
+          hint={isTime
+            ? "Per-side tracking isn't available for time-tracked exercises. Switch back to Reps tracking to enable it."
+            : "Track left and right reps separately. Useful for dumbbell, single-arm, or split-leg exercises. The rep range applies per side."}
+        >
+          {/* Mutually exclusive with time tracking — the spec says
+              disable rather than auto-clear so the user understands
+              why it's locked. The chip looks disabled visually via the
+              disabled fieldset CSS the parent already applies in
+              read-only mode; here we additionally disable each chip
+              when isTime so the user can't toggle it on. */}
+          <div className="flex gap-1.5">
+            <FilterChip
+              active={!perSide}
+              onClick={() => !isTime && setPerSide(false)}
+            >
+              Single side
+            </FilterChip>
+            <FilterChip
+              active={perSide}
+              onClick={() => !isTime && setPerSide(true)}
+            >
+              Per side
+            </FilterChip>
           </div>
         </Field>
 
@@ -2307,7 +2483,7 @@ function ExerciseEditView({ exercise, initialName, defaultUnit = "lb", saveError
           </button>
         ) : (
           <button
-            onClick={() => canSave && onSave({ id: exercise?.id, name: name.trim(), description: description.trim() || null, muscle, equipment, targetReps: [minReps, maxReps], unit, tracksWeight, trackingMode, bumpRule, increment })}
+            onClick={() => canSave && onSave({ id: exercise?.id, name: name.trim(), description: description.trim() || null, muscle, equipment, targetReps: [minReps, maxReps], unit, tracksWeight, trackingMode, perSide, bumpRule, increment })}
             disabled={!canSave}
             className="flex-1 py-3 rounded-xl text-white font-semibold text-sm disabled:opacity-30 transition"
             style={{ background: "var(--primary)" }}
@@ -2470,7 +2646,10 @@ function PastView({ sessions, history, onSelectSession, onGoHome }) {
             {list.map(session => {
               const entries = history.filter(h => h.workoutId === session.id);
               const duration = Math.floor((new Date(session.endedAt) - new Date(session.startedAt)) / 60000);
-              const totalSets = entries.reduce((acc, e) => acc + e.reps.length, 0);
+              // Per-side entries have an empty `reps` and populated repsLeft —
+          // fall back to whichever has length so the count is right
+          // without needing the library here.
+          const totalSets = entries.reduce((acc, e) => acc + ((e.repsLeft || []).length || (e.reps || []).length), 0);
               return (
                 <button key={session.id} onClick={() => onSelectSession(session.id)} className="w-full surface border border-soft card-shadow rounded-2xl p-4 flex items-center gap-3 transition group text-left hover:bg-navy-50">
                   <div className="w-11 h-11 rounded-xl flex items-center justify-center shrink-0" style={{ background: "var(--navy-50)" }}>
@@ -2547,17 +2726,19 @@ function SessionDetailView({ session, entries, exercises, lastByExercise, settin
     : null;
   const displayEntries = editing ? draftEntries : entries;
   // Time-tracked entries don't contribute to a "Total reps" stat — their
-  // numbers are seconds, not reps. Sum reps-mode entries only.
+  // numbers are seconds, not reps. Per-side entries sum L + R per set.
   const totalReps = displayEntries.reduce((acc, e) => {
-    if (isTimeTracked(exercises?.find(x => x.name === e.exercise))) return acc;
-    return acc + e.reps.reduce((a, b) => a + b, 0);
+    const lib = exercises?.find(x => x.name === e.exercise);
+    if (isTimeTracked(lib)) return acc;
+    return acc + entryRepTotal(e, lib);
   }, 0);
 
   // Per-entry volume (weight × reps), plus the session total. Time-tracked
   // entries are skipped entirely (their reps are seconds). Bodyweight
   // entries contribute 0 — counted in the total per the spec, just adds
-  // nothing. The map keys are entry ids so the per-card caption below can
-  // pick out its own number without recomputing.
+  // nothing. Per-side entries multiply weight by (L + R) summed across
+  // sets via entryRepTotal. The map keys are entry ids so the per-card
+  // caption below can pick out its own number without recomputing.
   const sessionUnit = settings?.defaultUnit || "lb";
   const volumeStats = useMemo(() => {
     const perEntry = new Map();
@@ -2570,7 +2751,7 @@ function SessionDetailView({ session, entries, exercises, lastByExercise, settin
         return;
       }
       hasRepTracked = true;
-      const reps = e.reps.reduce((a, b) => a + b, 0);
+      const reps = entryRepTotal(e, lib);
       const vol = (e.weight || 0) * reps;
       perEntry.set(e.id, vol);
       total += vol;
@@ -2582,9 +2763,21 @@ function SessionDetailView({ session, entries, exercises, lastByExercise, settin
     setDraftEntries(draftEntries.map(e => e.id === entryId ? { ...e, ...patch } : e));
   };
 
-  const updateEntryReps = (entryId, setIdx, value) => {
+  // Side is "left" / "right" / undefined. Per-side entries route to the
+  // corresponding array; non-per-side entries fall through to `reps`.
+  const updateEntryReps = (entryId, setIdx, value, side) => {
     setDraftEntries(draftEntries.map(e => {
       if (e.id !== entryId) return e;
+      if (side === "left") {
+        const next = [...(e.repsLeft || [])];
+        next[setIdx] = Math.max(0, parseInt(value) || 0);
+        return { ...e, repsLeft: next };
+      }
+      if (side === "right") {
+        const next = [...(e.repsRight || [])];
+        next[setIdx] = Math.max(0, parseInt(value) || 0);
+        return { ...e, repsRight: next };
+      }
       const newReps = [...e.reps];
       newReps[setIdx] = Math.max(0, parseInt(value) || 0);
       return { ...e, reps: newReps };
@@ -2594,13 +2787,38 @@ function SessionDetailView({ session, entries, exercises, lastByExercise, settin
   const removeEntrySet = (entryId, setIdx) => {
     setDraftEntries(draftEntries.map(e => {
       if (e.id !== entryId) return e;
+      // Detect per-side from the entry's array shape — the buildDraftEntry
+      // and EditableEntry render below seed repsLeft/repsRight when the
+      // library row is per-side, so a non-empty array is the signal.
+      const isPS = (e.repsLeft || []).length > 0 || (e.repsRight || []).length > 0;
+      if (isPS) {
+        const left = (e.repsLeft || []).filter((_, i) => i !== setIdx);
+        const right = (e.repsRight || []).filter((_, i) => i !== setIdx);
+        // Always leave at least one set so the row renders.
+        return {
+          ...e,
+          repsLeft: left.length > 0 ? left : [0],
+          repsRight: right.length > 0 ? right : [0],
+        };
+      }
       const newReps = e.reps.filter((_, i) => i !== setIdx);
       return { ...e, reps: newReps.length > 0 ? newReps : [0] };
     }));
   };
 
   const addEntrySet = (entryId) => {
-    setDraftEntries(draftEntries.map(e => e.id === entryId ? { ...e, reps: [...e.reps, 0] } : e));
+    setDraftEntries(draftEntries.map(e => {
+      if (e.id !== entryId) return e;
+      const isPS = (e.repsLeft || []).length > 0 || (e.repsRight || []).length > 0;
+      if (isPS) {
+        return {
+          ...e,
+          repsLeft: [...(e.repsLeft || []), 0],
+          repsRight: [...(e.repsRight || []), 0],
+        };
+      }
+      return { ...e, reps: [...e.reps, 0] };
+    }));
   };
 
   const removeEntry = (entryId) => {
@@ -2613,16 +2831,21 @@ function SessionDetailView({ session, entries, exercises, lastByExercise, settin
   // shows a row to fill in. Library lookup gives us the right unit and
   // targetReps; falls back to sensible defaults if the library entry is
   // somehow missing.
-  const buildDraftEntry = (exerciseName, libEx) => ({
-    id: Date.now(),
-    date: session.startedAt,
-    exercise: exerciseName,
-    weight: 0,
-    reps: [0],
-    targetReps: libEx?.targetReps || [8, 12],
-    unit: libEx?.unit || "lb",
-    workoutId: session.id,
-  });
+  const buildDraftEntry = (exerciseName, libEx) => {
+    const ps = isPerSide(libEx);
+    return {
+      id: Date.now(),
+      date: session.startedAt,
+      exercise: exerciseName,
+      weight: 0,
+      reps: ps ? [] : [0],
+      repsLeft: ps ? [0] : [],
+      repsRight: ps ? [0] : [],
+      targetReps: libEx?.targetReps || [8, 12],
+      unit: libEx?.unit || "lb",
+      workoutId: session.id,
+    };
+  };
 
   const addExistingExercise = (exerciseName) => {
     const libEx = exercises?.find(e => e.name === exerciseName);
@@ -2643,10 +2866,16 @@ function SessionDetailView({ session, entries, exercises, lastByExercise, settin
   };
 
   const handleSave = async () => {
-    // Filter out any entries that ended up with no reps (e.g. all sets removed)
+    // Filter out any entries that ended up with no reps (e.g. all sets
+    // removed). Per-side entries trim both arrays in lockstep — a set
+    // survives when EITHER side has a value.
     const cleaned = draftEntries
-      .map(e => ({ ...e, reps: e.reps.filter(r => r > 0) }))
-      .filter(e => e.reps.length > 0);
+      .map(e => {
+        const isPS = (e.repsLeft || []).length > 0 || (e.repsRight || []).length > 0;
+        const trimmed = trimEntryForPersistence({ ...e, perSide: isPS });
+        return { ...e, reps: trimmed.reps, repsLeft: trimmed.repsLeft, repsRight: trimmed.repsRight };
+      })
+      .filter(e => (e.reps || []).length > 0 || (e.repsLeft || []).length > 0 || (e.repsRight || []).length > 0);
     const ok = await onUpdate(session.id, { name: draftName.trim() || "Workout" }, cleaned);
     if (ok) setEditing(false);
   };
@@ -2774,10 +3003,13 @@ function SessionDetailView({ session, entries, exercises, lastByExercise, settin
               // weight), set count, and total reps. Time-tracked entries
               // skip the volume + reps parts since reps are seconds and
               // the per-set values (45s · 60s · 30s) already render
-              // above. Bodyweight entries skip volume only.
+              // above. Bodyweight entries skip volume only. Per-side
+              // entries swap the per-set rep readout for an L/R split
+              // and keep the caption intact (sum of L+R drives reps total).
               const isTime = isTimeTracked(libEx);
-              const setCount = entry.reps.length;
-              const repTotal = entry.reps.reduce((a, b) => a + b, 0);
+              const perSide = isPerSide(libEx);
+              const setCount = entrySetCount(entry, libEx);
+              const repTotal = entryRepTotal(entry, libEx);
               const entryVolume = volumeStats.perEntry.get(entry.id);
               const captionParts = [];
               if (entryVolume != null && entryVolume > 0) {
@@ -2797,18 +3029,34 @@ function SessionDetailView({ session, entries, exercises, lastByExercise, settin
                       />
                     )}
                   </div>
-                  <div className="flex items-baseline gap-2">
-                    {entry.weight > 0 ? (
-                      <>
-                        <div className="text-2xl font-semibold mono text-navy-900">{entry.weight}</div>
-                        <div className="text-navy-400 text-xs mono">{entry.unit}</div>
-                        <div className="text-navy-300 mono">×</div>
-                        <div className="text-navy-700 mono text-sm">{formatSets(entry.reps)}</div>
-                      </>
-                    ) : (
-                      <div className="text-2xl font-semibold mono text-navy-900">{formatSets(entry.reps)}</div>
-                    )}
-                  </div>
+                  {perSide ? (
+                    <div className="space-y-1">
+                      {entry.weight > 0 && (
+                        <div className="flex items-baseline gap-2">
+                          <div className="text-2xl font-semibold mono text-navy-900">{entry.weight}</div>
+                          <div className="text-navy-400 text-xs mono">{entry.unit}</div>
+                        </div>
+                      )}
+                      <div className="text-navy-700 mono text-sm">
+                        <span className="text-navy-400">L:</span> {(entry.repsLeft || []).join("·") || "—"}
+                        {"  "}
+                        <span className="text-navy-400">R:</span> {(entry.repsRight || []).join("·") || "—"}
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="flex items-baseline gap-2">
+                      {entry.weight > 0 ? (
+                        <>
+                          <div className="text-2xl font-semibold mono text-navy-900">{entry.weight}</div>
+                          <div className="text-navy-400 text-xs mono">{entry.unit}</div>
+                          <div className="text-navy-300 mono">×</div>
+                          <div className="text-navy-700 mono text-sm">{formatSets(entry.reps)}</div>
+                        </>
+                      ) : (
+                        <div className="text-2xl font-semibold mono text-navy-900">{formatSets(entry.reps)}</div>
+                      )}
+                    </div>
+                  )}
                   <div className="mt-1.5 text-[11px] text-navy-400 mono">
                     {captionParts.join(" · ")}
                   </div>
@@ -2879,6 +3127,13 @@ function SessionDetailView({ session, entries, exercises, lastByExercise, settin
 
 function EditableEntry({ entry, libEx, onWeightChange, onRepsChange, onNoteChange, onAddSet, onRemoveSet, onRemoveEntry }) {
   const setNoun = isTimeTracked(libEx) ? "seconds" : "reps";
+  // Per-side detection lives on the entry itself for past sessions —
+  // the entry was inserted with repsLeft / repsRight populated, so a
+  // non-empty side array signals per-side regardless of the current
+  // library state (handles the rare case where the library row was
+  // toggled off after the session was logged).
+  const perSide = (entry.repsLeft || []).length > 0 || (entry.repsRight || []).length > 0;
+  const psSetCount = Math.max((entry.repsLeft || []).length, (entry.repsRight || []).length);
   const [showNote, setShowNote] = useState(!!entry.note);
   const [confirmRemove, setConfirmRemove] = useState(false);
   const [editingWeight, setEditingWeight] = useState(false);
@@ -2963,32 +3218,67 @@ function EditableEntry({ entry, libEx, onWeightChange, onRepsChange, onNoteChang
         </button>
       )}
 
-      {/* Sets */}
+      {/* Sets — single-side maps entry.reps; per-side iterates the
+          longer of repsLeft/repsRight and renders L/R inputs side by
+          side. Both branches share the same Add/Remove pattern. */}
       <div className="mt-3">
-        <div className="text-[10px] uppercase tracking-[0.18em] text-navy-500 mono font-medium mb-2">Sets</div>
+        <div className="text-[10px] uppercase tracking-[0.18em] text-navy-500 mono font-medium mb-2">Sets{perSide ? " · L / R" : ""}</div>
         <div className="space-y-1.5">
-          {entry.reps.map((reps, i) => (
-            <div key={i} className="flex items-center gap-2">
-              <div className="w-7 h-7 rounded-md flex items-center justify-center text-[10px] mono shrink-0 font-semibold" style={{ background: "var(--navy-50)", color: "var(--navy-600)" }}>
-                {i + 1}
-              </div>
-              <input
-                type="number"
-                inputMode="numeric"
-                value={reps || ""}
-                onChange={e => onRepsChange(i, e.target.value)}
-                onFocus={focusToEnd}
-                placeholder="0"
-                className="w-16 surface-2 border border-soft rounded-md px-2 py-1.5 text-sm font-semibold mono text-center text-navy-900 focus:outline-none focus:border-strong"
-              />
-              <span className="text-xs text-navy-400">{setNoun}</span>
-              {entry.reps.length > 1 && (
-                <button onClick={() => onRemoveSet(i)} className="ml-auto text-navy-300 hover:text-red-600 p-1 transition">
-                  <X size={12} />
-                </button>
-              )}
-            </div>
-          ))}
+          {perSide
+            ? Array.from({ length: psSetCount }).map((_, i) => (
+                <div key={i} className="flex items-center gap-2">
+                  <div className="w-7 h-7 rounded-md flex items-center justify-center text-[10px] mono shrink-0 font-semibold" style={{ background: "var(--navy-50)", color: "var(--navy-600)" }}>
+                    {i + 1}
+                  </div>
+                  <span className="text-[10px] text-navy-400 mono">L</span>
+                  <input
+                    type="number"
+                    inputMode="numeric"
+                    value={(entry.repsLeft || [])[i] || ""}
+                    onChange={e => onRepsChange(i, e.target.value, "left")}
+                    onFocus={focusToEnd}
+                    placeholder="0"
+                    className="w-14 surface-2 border border-soft rounded-md px-2 py-1.5 text-sm font-semibold mono text-center text-navy-900 focus:outline-none focus:border-strong"
+                  />
+                  <span className="text-[10px] text-navy-400 mono">R</span>
+                  <input
+                    type="number"
+                    inputMode="numeric"
+                    value={(entry.repsRight || [])[i] || ""}
+                    onChange={e => onRepsChange(i, e.target.value, "right")}
+                    onFocus={focusToEnd}
+                    placeholder="0"
+                    className="w-14 surface-2 border border-soft rounded-md px-2 py-1.5 text-sm font-semibold mono text-center text-navy-900 focus:outline-none focus:border-strong"
+                  />
+                  {psSetCount > 1 && (
+                    <button onClick={() => onRemoveSet(i)} className="ml-auto text-navy-300 hover:text-red-600 p-1 transition">
+                      <X size={12} />
+                    </button>
+                  )}
+                </div>
+              ))
+            : entry.reps.map((reps, i) => (
+                <div key={i} className="flex items-center gap-2">
+                  <div className="w-7 h-7 rounded-md flex items-center justify-center text-[10px] mono shrink-0 font-semibold" style={{ background: "var(--navy-50)", color: "var(--navy-600)" }}>
+                    {i + 1}
+                  </div>
+                  <input
+                    type="number"
+                    inputMode="numeric"
+                    value={reps || ""}
+                    onChange={e => onRepsChange(i, e.target.value)}
+                    onFocus={focusToEnd}
+                    placeholder="0"
+                    className="w-16 surface-2 border border-soft rounded-md px-2 py-1.5 text-sm font-semibold mono text-center text-navy-900 focus:outline-none focus:border-strong"
+                  />
+                  <span className="text-xs text-navy-400">{setNoun}</span>
+                  {entry.reps.length > 1 && (
+                    <button onClick={() => onRemoveSet(i)} className="ml-auto text-navy-300 hover:text-red-600 p-1 transition">
+                      <X size={12} />
+                    </button>
+                  )}
+                </div>
+              ))}
         </div>
         <button onClick={onAddSet} className="mt-2 text-xs text-navy-500 hover:text-navy-900 flex items-center gap-1.5 transition">
           <Plus size={12} /> Add set
@@ -3341,11 +3631,17 @@ function ProfileView({ profile, sessions, history, exercises, onEdit, onOpenSett
     return m;
   }, [exercises]);
 
-  const totalSets = history.reduce((acc, e) => acc + e.reps.length, 0);
+  // Per-side aware: each set counts once (regardless of L/R), reps sum
+  // both sides, volume is weight × (L+R) per set summed.
+  const totalSets = useMemo(
+    () => history.reduce((acc, e) => acc + entrySetCount(e, libByName.get(e.exercise)), 0),
+    [history, libByName],
+  );
   const totalReps = useMemo(
     () => history.reduce((acc, e) => {
-      if (isTimeTracked(libByName.get(e.exercise))) return acc;
-      return acc + e.reps.reduce((a, b) => a + b, 0);
+      const lib = libByName.get(e.exercise);
+      if (isTimeTracked(lib)) return acc;
+      return acc + entryRepTotal(e, lib);
     }, 0),
     [history, libByName],
   );
@@ -3356,8 +3652,9 @@ function ProfileView({ profile, sessions, history, exercises, onEdit, onOpenSett
   const totalVolume = useMemo(() => {
     const targetUnit = profile.units === "imperial" ? "lb" : "kg";
     return history.reduce((acc, entry) => {
-      if (isTimeTracked(libByName.get(entry.exercise))) return acc;
-      const entryReps = entry.reps.reduce((a, b) => a + b, 0);
+      const lib = libByName.get(entry.exercise);
+      if (isTimeTracked(lib)) return acc;
+      const entryReps = entryRepTotal(entry, lib);
       let weight = entry.weight;
       if (entry.unit !== targetUnit) {
         weight = entry.unit === "kg" ? weight * 2.205 : weight / 2.205;
@@ -3822,9 +4119,12 @@ function buildCsv(sessions, history, exercises = []) {
   const sessionMap = new Map(sessions.map(s => [s.id, s]));
   const libByName = new Map((exercises || []).map(e => [e.name, e]));
   const rows = [];
+  // Per-side rows leave the Reps column empty and populate Reps L /
+  // Reps R; non-per-side rows do the inverse. Tracking mode column
+  // disambiguates 'reps' vs 'time'.
   rows.push([
     "Date", "Time", "Workout name", "Exercise", "Set #",
-    "Weight", "Unit", "Reps", "Tracking mode", "Note"
+    "Weight", "Unit", "Reps", "Reps L", "Reps R", "Tracking mode", "Note"
   ]);
   const sortedHistory = [...history].sort((a, b) => a.date.localeCompare(b.date));
   sortedHistory.forEach(entry => {
@@ -3841,12 +4141,25 @@ function buildCsv(sessions, history, exercises = []) {
     // don't carry it themselves, so an exercise renamed/deleted since
     // logging falls back to 'reps'.
     const mode = trackingModeFor(libByName.get(entry.exercise));
-    entry.reps.forEach((reps, i) => {
-      rows.push([
-        dateStr, timeStr, workoutName, entry.exercise, i + 1,
-        weightCell, unitCell, reps, mode, entry.note || "",
-      ]);
-    });
+    const isPS = (entry.repsLeft || []).length > 0 || (entry.repsRight || []).length > 0;
+    if (isPS) {
+      const left = entry.repsLeft || [];
+      const right = entry.repsRight || [];
+      const len = Math.max(left.length, right.length);
+      for (let i = 0; i < len; i++) {
+        rows.push([
+          dateStr, timeStr, workoutName, entry.exercise, i + 1,
+          weightCell, unitCell, "", left[i] ?? "", right[i] ?? "", mode, entry.note || "",
+        ]);
+      }
+    } else {
+      entry.reps.forEach((reps, i) => {
+        rows.push([
+          dateStr, timeStr, workoutName, entry.exercise, i + 1,
+          weightCell, unitCell, reps, "", "", mode, entry.note || "",
+        ]);
+      });
+    }
   });
   return rows.map(row =>
     row.map(cell => {
@@ -4040,7 +4353,8 @@ function ExerciseDetailView({ entries, libEx, onEdit, onCustomize }) {
           <div className="text-[10px] uppercase tracking-[0.18em] text-navy-500 mono font-medium mb-3">History</div>
           <div className="space-y-2">
             {entries.map(entry => {
-              const total = entry.reps.reduce((a, b) => a + b, 0);
+              const perSideEntry = isPerSide(libEx);
+              const total = entryRepTotal(entry, libEx);
               const setsStr = entry.reps.map(r => `${r}${suffix}`).join(" · ");
               return (
                 <div key={entry.id} className="surface border border-soft card-shadow rounded-xl p-3.5">
@@ -4049,18 +4363,34 @@ function ExerciseDetailView({ entries, libEx, onEdit, onCustomize }) {
                     {/* Volume tile is meaningless for time-tracked sets — they're seconds. */}
                     {!isTime && <div className="text-[10px] text-navy-300 mono">vol {total}</div>}
                   </div>
-                  <div className="flex items-baseline gap-2">
-                    {entry.weight > 0 ? (
-                      <>
-                        <div className="text-2xl font-semibold mono text-navy-900">{entry.weight}</div>
-                        <div className="text-navy-400 text-xs mono">{entry.unit}</div>
-                        <div className="text-navy-300 mono">×</div>
-                        <div className="text-navy-700 mono text-sm">{setsStr}</div>
-                      </>
-                    ) : (
-                      <div className="text-2xl font-semibold mono text-navy-900">{setsStr}</div>
-                    )}
-                  </div>
+                  {perSideEntry ? (
+                    <div className="space-y-1">
+                      {entry.weight > 0 && (
+                        <div className="flex items-baseline gap-2">
+                          <div className="text-2xl font-semibold mono text-navy-900">{entry.weight}</div>
+                          <div className="text-navy-400 text-xs mono">{entry.unit}</div>
+                        </div>
+                      )}
+                      <div className="text-navy-700 mono text-sm">
+                        <span className="text-navy-400">L:</span> {(entry.repsLeft || []).join("·") || "—"}
+                        {"  "}
+                        <span className="text-navy-400">R:</span> {(entry.repsRight || []).join("·") || "—"}
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="flex items-baseline gap-2">
+                      {entry.weight > 0 ? (
+                        <>
+                          <div className="text-2xl font-semibold mono text-navy-900">{entry.weight}</div>
+                          <div className="text-navy-400 text-xs mono">{entry.unit}</div>
+                          <div className="text-navy-300 mono">×</div>
+                          <div className="text-navy-700 mono text-sm">{setsStr}</div>
+                        </>
+                      ) : (
+                        <div className="text-2xl font-semibold mono text-navy-900">{setsStr}</div>
+                      )}
+                    </div>
+                  )}
                   {entry.note && <div className="mt-2 text-xs text-navy-500 italic">"{entry.note}"</div>}
                 </div>
               );
@@ -4209,7 +4539,21 @@ function WorkoutView({ workout, setWorkout, exercises, lastByExercise, settings,
       {workout.exercises.length > 1 && (
         <div className="mt-4 flex gap-1.5 overflow-x-auto pb-1 -mx-5 px-5 scrollbar-hide">
           {workout.exercises.map((ex, i) => {
-            const completed = ex.reps.filter(r => r > 0).length;
+            // Per-side: a set is "logged" when EITHER side has a value.
+            // Total is the length of either array (kept in lockstep).
+            let completed, total;
+            if (ex.perSide) {
+              const left = ex.repsLeft || [];
+              const right = ex.repsRight || [];
+              total = Math.max(left.length, right.length);
+              completed = 0;
+              for (let k = 0; k < total; k++) {
+                if ((left[k] || 0) > 0 || (right[k] || 0) > 0) completed++;
+              }
+            } else {
+              completed = ex.reps.filter(r => r > 0).length;
+              total = ex.reps.length;
+            }
             return (
               <button
                 key={i}
@@ -4221,7 +4565,7 @@ function WorkoutView({ workout, setWorkout, exercises, lastByExercise, settings,
                   borderColor: i === activeIdx ? "var(--primary)" : "var(--border)",
                 }}
               >
-                {ex.exercise.split(" ").slice(0,2).join(" ")} {completed > 0 && <span className="ml-1 mono">{completed}/{ex.reps.length}</span>}
+                {ex.exercise.split(" ").slice(0,2).join(" ")} {completed > 0 && <span className="ml-1 mono">{completed}/{total}</span>}
               </button>
             );
           })}
@@ -4282,6 +4626,7 @@ function buildExerciseFromHistory(sourceEntry, libEx) {
   const prog = getProgressionStatus(sourceEntry, libEx);
   const weighted = tracksWeightFor(libEx);
   const mode = trackingModeFor(libEx);
+  const perSide = isPerSide(libEx);
   // Bodyweight progression happens via reps/seconds, not weight, so don't
   // pre-bump the weight value.
   const startWeight = (weighted && prog?.status === "bump")
@@ -4296,13 +4641,24 @@ function buildExerciseFromHistory(sourceEntry, libEx) {
     weight: startWeight,
     lastWeight: sourceEntry.weight,
     lastReps: sourceEntry.reps,
+    // Per-side: keep both prior arrays so the "last time" reference can
+    // render L: ... R: ... cleanly. Empty for non-per-side entries.
+    lastRepsLeft: sourceEntry.repsLeft || [],
+    lastRepsRight: sourceEntry.repsRight || [],
     lastDate: sourceEntry.date,
     targetReps: libEx?.targetReps || sourceEntry.targetReps,
     unit: libEx?.unit || sourceEntry.unit,
     tracksWeight: weighted,
     trackingMode: mode,
+    perSide,
     increment: libEx?.increment ?? (sourceEntry.weight < 50 ? 2.5 : 5),
-    reps: [0, 0, 0],
+    // Per-side keeps reps empty and uses repsLeft/repsRight; non-per-side
+    // uses reps and leaves the side arrays empty. The history insert path
+    // mirrors this — only one of the two storage modes is ever populated
+    // for any given entry.
+    reps: perSide ? [] : [0, 0, 0],
+    repsLeft: perSide ? [0, 0, 0] : [],
+    repsRight: perSide ? [0, 0, 0] : [],
     note: "",
     bumped: weighted && prog?.status === "bump",
     // Bodyweight time exercises progress by holding longer next session,
@@ -4313,21 +4669,27 @@ function buildExerciseFromHistory(sourceEntry, libEx) {
 }
 
 function buildBlankExercise(name, libEx) {
+  const perSide = isPerSide(libEx);
   return {
     exercise: name,
     description: libEx?.description || null,
-    weight: 0, lastWeight: null, lastReps: [], lastDate: null,
+    weight: 0, lastWeight: null, lastReps: [], lastRepsLeft: [], lastRepsRight: [], lastDate: null,
     targetReps: libEx?.targetReps || [8, 12], unit: libEx?.unit || "lb",
     tracksWeight: tracksWeightFor(libEx),
     trackingMode: trackingModeFor(libEx),
+    perSide,
     increment: libEx?.increment ?? 5,
-    reps: [0, 0, 0], note: "", bumped: false, holdLonger: false,
+    reps: perSide ? [] : [0, 0, 0],
+    repsLeft: perSide ? [0, 0, 0] : [],
+    repsRight: perSide ? [0, 0, 0] : [],
+    note: "", bumped: false, holdLonger: false,
   };
 }
 
 function ActiveExercise({ ex, showLevelUpAlerts = true, onUpdate, onRemove }) {
   const isBodyweight = ex.tracksWeight === false;
   const isTime = ex.trackingMode === "time";
+  const isPerSideEx = ex.perSide === true;
   const setNoun = isTime ? "seconds" : "reps";
   const setSuffix = isTime ? "s" : "";
   // +/- step on each set: 5 for time (more useful for plank-class
@@ -4410,8 +4772,51 @@ function ActiveExercise({ ex, showLevelUpAlerts = true, onUpdate, onRemove }) {
     if (value > 0 && oldVal === 0) setRestTimer({ startedAt: Date.now() });
   };
 
-  const addSet = () => onUpdate({ reps: [...ex.reps, 0] });
-  const removeSet = (idx) => onUpdate({ reps: ex.reps.filter((_, i) => i !== idx) });
+  // Per-side rep setters: update one side at a time, kicking off the
+  // rest timer when ANY side first goes from 0 to positive.
+  const setRepsLeft = (idx, value) => {
+    const next = [...(ex.repsLeft || [])];
+    const oldVal = next[idx] || 0;
+    next[idx] = Math.max(0, value);
+    onUpdate({ repsLeft: next });
+    if (value > 0 && oldVal === 0) setRestTimer({ startedAt: Date.now() });
+  };
+  const setRepsRight = (idx, value) => {
+    const next = [...(ex.repsRight || [])];
+    const oldVal = next[idx] || 0;
+    next[idx] = Math.max(0, value);
+    onUpdate({ repsRight: next });
+    if (value > 0 && oldVal === 0) setRestTimer({ startedAt: Date.now() });
+  };
+
+  // Add / remove operate on either the single reps array or both
+  // per-side arrays in lockstep so set indices stay aligned.
+  const addSet = () => {
+    if (isPerSideEx) {
+      onUpdate({
+        repsLeft: [...(ex.repsLeft || []), 0],
+        repsRight: [...(ex.repsRight || []), 0],
+      });
+    } else {
+      onUpdate({ reps: [...ex.reps, 0] });
+    }
+  };
+  const removeSet = (idx) => {
+    if (isPerSideEx) {
+      onUpdate({
+        repsLeft: (ex.repsLeft || []).filter((_, i) => i !== idx),
+        repsRight: (ex.repsRight || []).filter((_, i) => i !== idx),
+      });
+    } else {
+      onUpdate({ reps: ex.reps.filter((_, i) => i !== idx) });
+    }
+  };
+
+  // Per-side or single-side, expose a unified "set count" so the
+  // target-line label and the set-row map line up.
+  const setCount = isPerSideEx
+    ? Math.max((ex.repsLeft || []).length, (ex.repsRight || []).length)
+    : ex.reps.length;
 
   const restElapsed = restTimer ? Math.floor((restNow - restTimer.startedAt) / 1000) : 0;
 
@@ -4440,11 +4845,25 @@ function ActiveExercise({ ex, showLevelUpAlerts = true, onUpdate, onRemove }) {
 
       {ex.lastDate ? (
         <div className="surface border border-soft rounded-xl p-3 mb-3">
-          <div className="flex items-center justify-between">
-            <div className="text-[10px] uppercase tracking-[0.18em] text-navy-500 mono font-medium">Last time · {formatDate(ex.lastDate)}</div>
-            <div className="text-xs mono text-navy-700">
-              {ex.lastWeight > 0 ? `${ex.lastWeight}${ex.unit} × ` : ""}{ex.lastReps.map(r => `${r}${setSuffix}`).join(" · ")}
-            </div>
+          <div className="flex items-center justify-between gap-2">
+            <div className="text-[10px] uppercase tracking-[0.18em] text-navy-500 mono font-medium shrink-0">Last time · {formatDate(ex.lastDate)}</div>
+            {/* Per-side: show L: ... / R: ... so the user can compare
+                each arm's previous performance at a glance. Single-side
+                keeps the original compact "weight × reps" format. */}
+            {isPerSideEx ? (
+              <div className="text-[11px] mono text-navy-700 text-right">
+                {ex.lastWeight > 0 ? <span className="text-navy-400">{ex.lastWeight}{ex.unit}</span> : null}
+                <div>
+                  <span className="text-navy-400">L:</span> {(ex.lastRepsLeft || []).join("·") || "—"}
+                  {" "}
+                  <span className="text-navy-400">R:</span> {(ex.lastRepsRight || []).join("·") || "—"}
+                </div>
+              </div>
+            ) : (
+              <div className="text-xs mono text-navy-700">
+                {ex.lastWeight > 0 ? `${ex.lastWeight}${ex.unit} × ` : ""}{ex.lastReps.map(r => `${r}${setSuffix}`).join(" · ")}
+              </div>
+            )}
           </div>
         </div>
       ) : (
@@ -4505,7 +4924,9 @@ function ActiveExercise({ ex, showLevelUpAlerts = true, onUpdate, onRemove }) {
 
       <div className="mt-4">
         <div className="flex items-center justify-between mb-3">
-          <div className="text-[10px] uppercase tracking-[0.18em] text-navy-500 mono font-medium">Sets · target {ex.targetReps[0]}–{ex.targetReps[1]} {setNoun}</div>
+          <div className="text-[10px] uppercase tracking-[0.18em] text-navy-500 mono font-medium">
+            Sets · target {ex.targetReps[0]}–{ex.targetReps[1]} {setNoun}{isPerSideEx ? " per side" : ""}
+          </div>
           {restTimer && (
             <button onClick={() => setRestTimer(null)} className="flex items-center gap-1.5 text-[10px] mono uppercase tracking-wider px-2 py-1 rounded-full font-semibold" style={{ color: "var(--success)", background: "var(--success-bg)" }}>
               <Clock size={10} /> rest {Math.floor(restElapsed/60)}:{String(restElapsed%60).padStart(2,"0")}
@@ -4513,9 +4934,25 @@ function ActiveExercise({ ex, showLevelUpAlerts = true, onUpdate, onRemove }) {
           )}
         </div>
         <div className="space-y-2">
-          {ex.reps.map((r, i) => (
-            <SetRow key={i} setNum={i + 1} reps={r} lastReps={ex.lastReps[i]} targetMax={ex.targetReps[1]} unitSuffix={setSuffix} step={setStep} onChange={(v) => setReps(i, v)} onRemove={ex.reps.length > 1 ? () => removeSet(i) : null} />
-          ))}
+          {isPerSideEx
+            ? Array.from({ length: setCount }).map((_, i) => (
+                <SetRowPerSide
+                  key={i}
+                  setNum={i + 1}
+                  left={(ex.repsLeft || [])[i] ?? 0}
+                  right={(ex.repsRight || [])[i] ?? 0}
+                  lastLeft={(ex.lastRepsLeft || [])[i]}
+                  lastRight={(ex.lastRepsRight || [])[i]}
+                  targetMax={ex.targetReps[1]}
+                  step={setStep}
+                  onChangeLeft={(v) => setRepsLeft(i, v)}
+                  onChangeRight={(v) => setRepsRight(i, v)}
+                  onRemove={setCount > 1 ? () => removeSet(i) : null}
+                />
+              ))
+            : ex.reps.map((r, i) => (
+                <SetRow key={i} setNum={i + 1} reps={r} lastReps={ex.lastReps[i]} targetMax={ex.targetReps[1]} unitSuffix={setSuffix} step={setStep} onChange={(v) => setReps(i, v)} onRemove={ex.reps.length > 1 ? () => removeSet(i) : null} />
+              ))}
         </div>
         <button onClick={addSet} className="mt-2 w-full surface-2 border border-dashed border-strong text-navy-500 py-2.5 rounded-lg text-xs font-medium flex items-center justify-center gap-1.5 hover:bg-navy-50 transition">
           <Plus size={12} /> Add set
@@ -4594,6 +5031,61 @@ function SetRow({ setNum, reps, lastReps, targetMax, unitSuffix = "", step = 1, 
           </button>
         )}
       </div>
+    </div>
+  );
+}
+
+// Per-side variant: one weight up top (managed by ActiveExercise) and
+// two stacked rep groups (L / R) here, each with its own +/- so the
+// user can advance one side independently. The set tile turns green
+// when BOTH sides hit the target — matches the progression rule that
+// requires both sides to reach the top to count.
+function SetRowPerSide({ setNum, left, right, lastLeft, lastRight, targetMax, step = 1, onChangeLeft, onChangeRight, onRemove }) {
+  const bothHitTarget = left >= targetMax && right >= targetMax;
+  const anyValue = (left || 0) > 0 || (right || 0) > 0;
+  return (
+    <div
+      className="p-2 rounded-xl border transition"
+      style={{
+        background: anyValue ? (bothHitTarget ? "var(--success-bg)" : "var(--surface)") : "var(--surface-2)",
+        borderColor: anyValue ? (bothHitTarget ? "var(--success-border)" : "var(--border)") : "var(--border)",
+      }}
+    >
+      <div className="flex items-center gap-2">
+        <div className="w-9 h-9 rounded-lg flex items-center justify-center text-[10px] uppercase tracking-wider mono shrink-0 font-semibold" style={{ background: "var(--navy-50)", color: "var(--navy-600)" }}>{setNum}</div>
+        <div className="flex-1 grid grid-cols-2 gap-2">
+          <PerSideInput label="L" value={left} lastValue={lastLeft} step={step} onChange={onChangeLeft} />
+          <PerSideInput label="R" value={right} lastValue={lastRight} step={step} onChange={onChangeRight} />
+        </div>
+        {onRemove && (
+          <button onClick={onRemove} className="text-navy-300 hover:text-red-600 p-1 shrink-0 transition">
+            <X size={12} />
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function PerSideInput({ label, value, lastValue, step, onChange }) {
+  return (
+    <div className="flex items-center gap-1">
+      <span className="text-[10px] mono text-navy-400 w-3 shrink-0">{label}</span>
+      <button onClick={() => onChange((value || 0) - step)} className="w-7 h-9 rounded-lg flex items-center justify-center transition active:scale-95 shrink-0" style={{ background: "var(--navy-100)", color: "var(--navy-700)" }}>
+        <Minus size={12} />
+      </button>
+      <input
+        type="number"
+        inputMode="numeric"
+        value={value || ""}
+        onChange={(e) => onChange(parseInt(e.target.value) || 0)}
+        onFocus={focusToEnd}
+        placeholder={lastValue ? String(lastValue) : "0"}
+        className="flex-1 min-w-0 h-9 surface border border-soft rounded-lg text-center text-sm font-semibold mono focus:outline-none focus:border-strong text-navy-900"
+      />
+      <button onClick={() => onChange((value || 0) + step)} className="w-7 h-9 rounded-lg flex items-center justify-center transition active:scale-95 shrink-0" style={{ background: "var(--navy-100)", color: "var(--navy-700)" }}>
+        <Plus size={12} />
+      </button>
     </div>
   );
 }
