@@ -1164,6 +1164,15 @@ export default function App() {
       "--bottom-stack-offset": activeWorkout && activeWorkout.minimized
         ? "calc(60px + env(safe-area-inset-bottom))"
         : "0px",
+      // Each view (HomeView, LibraryView, PastView, etc.) sets its own pb-28
+      // for the tab bar, but that doesn't account for the minimized workout
+      // pill stacked above the tab bar. Add the stack offset here so when a
+      // workout is minimized, every view gets the extra clearance — no per-
+      // view padding bumps required. Bug symptom this avoids: the "Manage
+      // exercise library" button (and other content at the bottom of Home)
+      // sitting behind the minimized bar, making the library look
+      // unreachable while a workout is in progress.
+      paddingBottom: "var(--bottom-stack-offset, 0px)",
     }}>
       <style>{`
         @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600;9..144,700&family=JetBrains+Mono:wght@400;500;600&display=swap');
