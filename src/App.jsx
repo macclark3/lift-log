@@ -149,6 +149,20 @@ function formatDuration(ms) {
   return `${m}:${String(s).padStart(2,"0")}`;
 }
 
+// Compact volume formatter shared by ProfileView totals and SessionDetailView
+// hero stats. Numbers ≥ 10k collapse to "12.5k", ≥ 1M to "1.2M". Smaller
+// values stay localized with thousands separators ("3,240"). Unit is
+// appended unless caller passes null (the per-exercise caption already
+// includes the unit string, so it asks for the bare number).
+function formatVolumeShort(v, unit) {
+  let core;
+  if (v >= 1_000_000) core = `${(v / 1_000_000).toFixed(1)}M`;
+  else if (v >= 10_000) core = `${(v / 1000).toFixed(1)}k`;
+  else if (v >= 1000) core = `${(v / 1000).toFixed(2)}k`;
+  else core = Math.round(v).toLocaleString();
+  return unit ? `${core} ${unit}` : core;
+}
+
 // Profile is "complete enough" to skip the welcome flow when the canonical
 // must-set fields all have values. This is the source of truth for whether
 // a user has been onboarded — the per-user localStorage flag below is just
@@ -2509,6 +2523,31 @@ function SessionDetailView({ session, entries, exercises, lastByExercise, settin
     return acc + e.reps.reduce((a, b) => a + b, 0);
   }, 0);
 
+  // Per-entry volume (weight × reps), plus the session total. Time-tracked
+  // entries are skipped entirely (their reps are seconds). Bodyweight
+  // entries contribute 0 — counted in the total per the spec, just adds
+  // nothing. The map keys are entry ids so the per-card caption below can
+  // pick out its own number without recomputing.
+  const sessionUnit = settings?.defaultUnit || "lb";
+  const volumeStats = useMemo(() => {
+    const perEntry = new Map();
+    let total = 0;
+    let hasRepTracked = false;
+    displayEntries.forEach(e => {
+      const lib = exercises?.find(x => x.name === e.exercise);
+      if (isTimeTracked(lib)) {
+        perEntry.set(e.id, null);
+        return;
+      }
+      hasRepTracked = true;
+      const reps = e.reps.reduce((a, b) => a + b, 0);
+      const vol = (e.weight || 0) * reps;
+      perEntry.set(e.id, vol);
+      total += vol;
+    });
+    return { perEntry, total, hasRepTracked };
+  }, [displayEntries, exercises]);
+
   const updateEntry = (entryId, patch) => {
     setDraftEntries(draftEntries.map(e => e.id === entryId ? { ...e, ...patch } : e));
   };
@@ -2607,8 +2646,13 @@ function SessionDetailView({ session, entries, exercises, lastByExercise, settin
         ) : (
           <div className="serif text-2xl mt-1 text-white" style={{ fontWeight: 500 }}>{session.name}</div>
         )}
-        <div className="grid grid-cols-3 gap-2 mt-5">
+        {/* 2x2 grid (was 1x3) so the new Volume tile gets enough room
+            for a 5-6 character number plus its unit suffix without
+            squeezing the others. Duration + Volume on top — the most
+            "session-y" stats; Exercises + Reps as the supporting counts. */}
+        <div className="grid grid-cols-2 gap-2 mt-5">
           <SessionStat label="Duration" value={duration == null ? "—" : `${duration}m`} />
+          <SessionStat label="Volume" value={volumeStats.hasRepTracked ? formatVolumeShort(volumeStats.total, sessionUnit) : "—"} />
           <SessionStat label="Exercises" value={displayEntries.length} />
           <SessionStat label="Total reps" value={totalReps} />
         </div>
@@ -2695,33 +2739,53 @@ function SessionDetailView({ session, entries, exercises, lastByExercise, settin
                 onRemoveSet={(setIdx) => removeEntrySet(entry.id, setIdx)}
                 onRemoveEntry={() => removeEntry(entry.id)}
               />
-            ) : (
-              <div key={entry.id} className="surface border border-soft card-shadow rounded-xl p-4">
-                <div className="font-semibold text-navy-900 mb-2 flex items-center gap-2">
-                  <span>{entry.exercise}</span>
-                  {leveledUp && (
-                    <span
-                      className="w-1.5 h-1.5 rounded-full shrink-0"
-                      style={{ background: "var(--accent)" }}
-                      aria-label="Earned a level up"
-                    />
-                  )}
+            ) : (() => {
+              // Caption row under the set summary: volume (when non-zero
+              // weight), set count, and total reps. Time-tracked entries
+              // skip the volume + reps parts since reps are seconds and
+              // the per-set values (45s · 60s · 30s) already render
+              // above. Bodyweight entries skip volume only.
+              const isTime = isTimeTracked(libEx);
+              const setCount = entry.reps.length;
+              const repTotal = entry.reps.reduce((a, b) => a + b, 0);
+              const entryVolume = volumeStats.perEntry.get(entry.id);
+              const captionParts = [];
+              if (entryVolume != null && entryVolume > 0) {
+                captionParts.push(formatVolumeShort(entryVolume, entry.unit || "lb"));
+              }
+              captionParts.push(`${setCount} ${setCount === 1 ? "set" : "sets"}`);
+              if (!isTime) captionParts.push(`${repTotal} reps`);
+              return (
+                <div key={entry.id} className="surface border border-soft card-shadow rounded-xl p-4">
+                  <div className="font-semibold text-navy-900 mb-2 flex items-center gap-2">
+                    <span>{entry.exercise}</span>
+                    {leveledUp && (
+                      <span
+                        className="w-1.5 h-1.5 rounded-full shrink-0"
+                        style={{ background: "var(--accent)" }}
+                        aria-label="Earned a level up"
+                      />
+                    )}
+                  </div>
+                  <div className="flex items-baseline gap-2">
+                    {entry.weight > 0 ? (
+                      <>
+                        <div className="text-2xl font-semibold mono text-navy-900">{entry.weight}</div>
+                        <div className="text-navy-400 text-xs mono">{entry.unit}</div>
+                        <div className="text-navy-300 mono">×</div>
+                        <div className="text-navy-700 mono text-sm">{formatSets(entry.reps)}</div>
+                      </>
+                    ) : (
+                      <div className="text-2xl font-semibold mono text-navy-900">{formatSets(entry.reps)}</div>
+                    )}
+                  </div>
+                  <div className="mt-1.5 text-[11px] text-navy-400 mono">
+                    {captionParts.join(" · ")}
+                  </div>
+                  {entry.note && <div className="mt-2 text-xs text-navy-500 italic">"{entry.note}"</div>}
                 </div>
-                <div className="flex items-baseline gap-2">
-                  {entry.weight > 0 ? (
-                    <>
-                      <div className="text-2xl font-semibold mono text-navy-900">{entry.weight}</div>
-                      <div className="text-navy-400 text-xs mono">{entry.unit}</div>
-                      <div className="text-navy-300 mono">×</div>
-                      <div className="text-navy-700 mono text-sm">{formatSets(entry.reps)}</div>
-                    </>
-                  ) : (
-                    <div className="text-2xl font-semibold mono text-navy-900">{formatSets(entry.reps)}</div>
-                  )}
-                </div>
-                {entry.note && <div className="mt-2 text-xs text-navy-500 italic">"{entry.note}"</div>}
-              </div>
-            );
+              );
+            })();
           })}
           {editing && displayEntries.length === 0 && (
             <div className="surface border border-dashed border-strong rounded-xl p-6 text-center text-sm text-navy-500">
