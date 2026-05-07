@@ -4,7 +4,7 @@ import {
   Play, X, Edit3, History, ListChecks, Heart, Home, Trash2, ChevronLeft, GripVertical,
   Activity, Footprints, Trophy, Scale, Search, Library, Sparkles,
   User, Mail, Calendar, CalendarCheck, Ruler, Target, Download, Camera, LogOut, Settings,
-  Smartphone, ChevronDown, ChevronUp
+  Smartphone, ChevronDown, ChevronUp, AlertTriangle, Sun
 } from "lucide-react";
 import { useLocalStorage } from "./hooks/useLocalStorage";
 import { useSessionState, signOut } from "./lib/auth";
@@ -15,6 +15,38 @@ import { AuthGate } from "./auth/AuthGate";
 import { SetNewPasswordScreen } from "./auth/SetNewPasswordScreen";
 import { OnboardingScreen } from "./auth/OnboardingScreen";
 import { AuthLoading, ProfileLoadError } from "./auth/AuthLayout";
+import pkg from "../package.json";
+
+const APP_VERSION = pkg.version;
+
+// --- SETTINGS DEFAULTS ---
+// Source of truth for setting defaults. Read paths in App.jsx merge a
+// user's persisted settings JSON over these so missing keys (or pre-
+// settings users) get sensible behavior. Don't reach into this directly
+// from components — go through profile.settings, which already includes
+// the merged values.
+const DEFAULT_SETTINGS = {
+  theme: "light",          // 'light' | 'dark' | 'system' — Phase A persists, Phase B applies
+  showLevelUpAlerts: true, // hides bumped/holdLonger/leveledUp UI when false
+  visibleHomeStats: {
+    volume: true,
+    sets: true,
+    reps: true,
+  },
+  defaultUnit: "lb",       // 'lb' | 'kg' — pre-fills the unit field on new exercises
+};
+
+function mergeSettings(persisted) {
+  const p = persisted || {};
+  return {
+    ...DEFAULT_SETTINGS,
+    ...p,
+    visibleHomeStats: {
+      ...DEFAULT_SETTINGS.visibleHomeStats,
+      ...(p.visibleHomeStats || {}),
+    },
+  };
+}
 
 // --- SEED PLANS ---
 // Exercises are no longer seeded — every user sees the public catalog
@@ -154,6 +186,10 @@ function mapRowToProfile(row, fallbackEmail) {
     memberSince: row.member_since || null,
     experienceLevel: row.experience_level ?? null,
     weeklyWorkoutGoal: row.weekly_workout_goal ?? null,
+    // settings is a jsonb column with per-key defaults. Merging here
+    // means downstream consumers can read profile.settings.foo without
+    // null-checking, and pre-settings rows behave like everyone else.
+    settings: mergeSettings(row.settings),
   };
 }
 
@@ -313,6 +349,11 @@ function profileToDbPatch(patch) {
   if ("units" in patch) out.units = patch.units ?? null;
   if ("experienceLevel" in patch) out.experience_level = patch.experienceLevel ?? null;
   if ("weeklyWorkoutGoal" in patch) out.weekly_workout_goal = patch.weeklyWorkoutGoal ?? null;
+  // Persist the entire settings object as a jsonb blob. Callers that
+  // toggle a single setting still pass the merged result so the DB
+  // value stays whole — this avoids a partial write clobbering keys
+  // we didn't include.
+  if ("settings" in patch) out.settings = patch.settings ?? {};
   return out;
 }
 
@@ -1111,6 +1152,65 @@ export default function App() {
     return true;
   };
 
+  // Apply a partial settings patch on top of the current merged settings
+  // and persist the whole blob. Reuses updateProfile so optimistic-update
+  // + rollback + error surface all come for free. settingsPatch can be
+  // shallow (e.g. { theme: 'dark' }) or include nested objects (e.g.
+  // { visibleHomeStats: { volume: false } }) — nested objects merge one
+  // level deep.
+  const updateSettings = async (settingsPatch) => {
+    if (!profile) return false;
+    const current = profile.settings || DEFAULT_SETTINGS;
+    const nextSettings = {
+      ...current,
+      ...settingsPatch,
+      visibleHomeStats: {
+        ...current.visibleHomeStats,
+        ...(settingsPatch.visibleHomeStats || {}),
+      },
+    };
+    return updateProfile({ settings: nextSettings });
+  };
+
+  // Delete every row this user owns and sign them out. Public exercise
+  // catalog rows are protected by RLS — DELETE WHERE user_id=auth.uid()
+  // never touches them. Sessions cascade to their history rows on
+  // delete (history.session_id has ON DELETE CASCADE) so we don't need
+  // to delete history explicitly. Auth.users stays as a stub (no admin
+  // API from the client); the user can re-register if they want.
+  // Returns true on success; on failure surfaces the error and bails
+  // before signing out so the user can retry.
+  const deleteAccount = async () => {
+    if (!session) return false;
+    const userId = session.user.id;
+    setLibrarySaveError(null);
+
+    const tables = [
+      // Order doesn't matter for correctness (each is RLS-scoped to
+      // user_id), but doing sessions first means cascading deletes
+      // clean up history before we get to it explicitly.
+      { name: "sessions", filter: { user_id: userId } },
+      { name: "history", filter: { user_id: userId } },
+      { name: "plans", filter: { user_id: userId } },
+      { name: "exercises", filter: { user_id: userId } },
+      { name: "profiles", filter: { id: userId } },
+    ];
+    for (const t of tables) {
+      let q = supabase.from(t.name).delete();
+      for (const [col, val] of Object.entries(t.filter)) q = q.eq(col, val);
+      const { error } = await q;
+      if (error) {
+        setLibrarySaveError(`Couldn't delete ${t.name}: ${error.message}`);
+        return false;
+      }
+    }
+
+    // Flash message read by the sign-in screen on next mount.
+    try { sessionStorage.setItem("flash:accountDeleted", "1"); } catch {}
+    await signOut();
+    return true;
+  };
+
   const finishOnboarding = async (patch) => {
     if (!session) return;
     const isSkip = Object.keys(patch).length === 0;
@@ -1254,7 +1354,7 @@ export default function App() {
             display:none when minimized rather than unmounted. */}
         {activeWorkout && (
           <div style={{ display: activeWorkout.minimized ? "none" : "block" }}>
-            <WorkoutView workout={activeWorkout} setWorkout={setActiveWorkout} exercises={exercises} lastByExercise={lastByExercise} onCreateExercise={addExerciseToLibrary} onFinish={finishWorkout} librarySaveError={librarySaveError} />
+            <WorkoutView workout={activeWorkout} setWorkout={setActiveWorkout} exercises={exercises} lastByExercise={lastByExercise} settings={profile?.settings || DEFAULT_SETTINGS} onCreateExercise={addExerciseToLibrary} onFinish={finishWorkout} librarySaveError={librarySaveError} />
           </div>
         )}
 
@@ -1313,6 +1413,7 @@ export default function App() {
                 entries={history.filter(h => h.workoutId === view.id).sort((a,b) => a.date.localeCompare(b.date))}
                 exercises={exercises}
                 lastByExercise={lastByExercise}
+                settings={profile?.settings || DEFAULT_SETTINGS}
                 hasActiveWorkout={!!activeWorkout}
                 onUpdate={updateSession}
                 onResume={async (id) => {
@@ -1335,6 +1436,7 @@ export default function App() {
                 plan={view.id ? plans.find(p => p.id === view.id) : null}
                 exercises={exercises}
                 lastByExercise={lastByExercise}
+                defaultUnit={profile?.settings?.defaultUnit || "lb"}
                 saveError={librarySaveError}
                 onSave={async (p) => {
                   const ok = await savePlan(p);
@@ -1361,6 +1463,7 @@ export default function App() {
                 key={view.id || "new"}
                 exercise={view.id ? exercises.find(e => e.id === view.id) : null}
                 initialName={view.initialName}
+                defaultUnit={profile?.settings?.defaultUnit || "lb"}
                 saveError={librarySaveError}
                 onSave={async (ex) => {
                   let ok;
@@ -1387,6 +1490,7 @@ export default function App() {
                 history={history}
                 exercises={exercises}
                 onEdit={() => pushView({ type: "profile-edit" })}
+                onOpenSettings={() => pushView({ type: "settings" })}
               />
             )}
             {view?.type === "profile-edit" && (
@@ -1399,6 +1503,22 @@ export default function App() {
                   // On failure the form stays open and saveError renders inline.
                 }}
                 onCancel={() => { setProfileSaveError(null); popView(); }}
+              />
+            )}
+            {view?.type === "settings" && (
+              <SettingsView
+                settings={profile?.settings || DEFAULT_SETTINGS}
+                onChange={updateSettings}
+                onDeleteAccount={() => pushView({ type: "delete-account" })}
+                saveError={profileSaveError}
+              />
+            )}
+            {view?.type === "delete-account" && (
+              <DeleteAccountView
+                email={profile?.email || session?.user?.email || ""}
+                onCancel={popView}
+                onDelete={deleteAccount}
+                deleteError={librarySaveError}
               />
             )}
           </>
@@ -1434,6 +1554,8 @@ function Header({ tab, view, activeWorkout, profile, onBack, onCancelWorkout, on
   if (view?.type === "exercise-edit") { title = view.id ? "Edit Exercise" : "New Exercise"; titleClass = "serif"; }
   if (view?.type === "profile") { title = "Profile"; titleClass = "serif"; }
   if (view?.type === "profile-edit") { title = "Edit Profile"; titleClass = "serif"; }
+  if (view?.type === "settings") { title = "Settings"; titleClass = "serif"; }
+  if (view?.type === "delete-account") { title = "Delete Account"; titleClass = "serif"; }
   // Workout view overrides whatever else might be in view — when foregrounded
   // the header always shows the active-session timer.
   if (inWorkoutView) { label = "Active Session"; title = <WorkoutTimer startedAt={activeWorkout?.startedAt} />; titleClass = "mono"; }
@@ -1763,18 +1885,23 @@ function HomeView({ recentSessions, recentExercisesList, sessions, history, plan
         </div>
       </div>
 
-      {/* This month */}
+      {/* This month — visibility per-stat is user-configurable in Settings.
+          Hidden stats render "—" instead of the number so the layout stays
+          stable as toggles flip; calculations keep running so toggling back
+          on shows the live value immediately. */}
       <div className="mt-7">
         <div className="text-[10px] uppercase tracking-[0.18em] text-navy-500 mono font-medium mb-2">This month</div>
         <div className="grid grid-cols-3 gap-2">
-          <StatTile label="Volume" value={monthStats.volume.toLocaleString()} unit={monthStats.unit} />
-          <StatTile label="Sets" value={monthStats.sets.toLocaleString()} unit={null} />
-          <StatTile label="Reps" value={monthStats.reps.toLocaleString()} unit={null} />
+          <StatTile label="Volume" value={(profile?.settings?.visibleHomeStats?.volume ?? true) ? monthStats.volume.toLocaleString() : "—"} unit={(profile?.settings?.visibleHomeStats?.volume ?? true) ? monthStats.unit : null} />
+          <StatTile label="Sets" value={(profile?.settings?.visibleHomeStats?.sets ?? true) ? monthStats.sets.toLocaleString() : "—"} unit={null} />
+          <StatTile label="Reps" value={(profile?.settings?.visibleHomeStats?.reps ?? true) ? monthStats.reps.toLocaleString() : "—"} unit={null} />
         </div>
       </div>
 
-      {/* Ready to level up — compact, horizontally scrolling */}
-      {readyToBump.length > 0 && (
+      {/* Ready to level up — compact, horizontally scrolling. Hidden when
+          the user has level-up alerts disabled in Settings. The
+          progression math underneath still runs; we just suppress the UI. */}
+      {readyToBump.length > 0 && (profile?.settings?.showLevelUpAlerts ?? true) && (
         <div className="mt-7">
           <div className="text-[10px] uppercase tracking-[0.18em] text-navy-500 mono font-medium mb-2">Ready to level up</div>
           <div className="relative -mx-5">
@@ -1970,13 +2097,15 @@ function FilterChip({ active, onClick, children }) {
 }
 
 // --- EXERCISE EDIT ---
-function ExerciseEditView({ exercise, initialName, saveError, onSave, onDelete, onCustomize, onCancel }) {
+function ExerciseEditView({ exercise, initialName, defaultUnit = "lb", saveError, onSave, onDelete, onCustomize, onCancel }) {
   const [name, setName] = useState(exercise?.name || initialName || "");
   const [muscle, setMuscle] = useState(exercise?.muscle || "Chest");
   const [equipment, setEquipment] = useState(exercise?.equipment || "Barbell");
   const [minReps, setMinReps] = useState(exercise?.targetReps[0] ?? 8);
   const [maxReps, setMaxReps] = useState(exercise?.targetReps[1] ?? 12);
-  const [unit, setUnit] = useState(exercise?.unit || "lb");
+  // For new exercises, fall back to the user's settings.defaultUnit (lb/kg).
+  // Existing exercises keep their saved unit; this only affects creates.
+  const [unit, setUnit] = useState(exercise?.unit || defaultUnit);
   const [tracksWeight, setTracksWeight] = useState(exercise ? exercise.tracksWeight !== false : true);
   const [trackingMode, setTrackingMode] = useState(exercise?.trackingMode === "time" ? "time" : "reps");
   const [bumpRule, setBumpRule] = useState(exercise?.bumpRule || "all");
@@ -2188,7 +2317,7 @@ function ExerciseEditView({ exercise, initialName, saveError, onSave, onDelete, 
 // a higher z-index than the search sheet (z-30) so it stacks above and can
 // dismiss back to it cleanly. Renders its own mini-header since it's outside
 // the routed Header's nav stack.
-function ExerciseEditModal({ initialName, saveError, onSave, onCancel }) {
+function ExerciseEditModal({ initialName, defaultUnit, saveError, onSave, onCancel }) {
   const displayName = (initialName || "").trim() || "Untitled";
   return (
     <div className="fixed inset-0 z-40 overflow-y-auto" style={{ background: "var(--bg)" }}>
@@ -2208,6 +2337,7 @@ function ExerciseEditModal({ initialName, saveError, onSave, onCancel }) {
         </div>
         <ExerciseEditView
           initialName={initialName}
+          defaultUnit={defaultUnit}
           saveError={saveError}
           onSave={onSave}
           onCancel={onCancel}
@@ -2374,7 +2504,8 @@ function StatTile({ label, value, unit }) {
   );
 }
 
-function SessionDetailView({ session, entries, exercises, lastByExercise, hasActiveWorkout, onUpdate, onResume, onDelete, onCreateExercise, librarySaveError }) {
+function SessionDetailView({ session, entries, exercises, lastByExercise, settings, hasActiveWorkout, onUpdate, onResume, onDelete, onCreateExercise, librarySaveError }) {
+  const showLevelUpAlerts = settings?.showLevelUpAlerts ?? true;
   const [editing, setEditing] = useState(false);
   const [draftName, setDraftName] = useState(session?.name || "");
   const [draftEntries, setDraftEntries] = useState(entries);
@@ -2585,7 +2716,7 @@ function SessionDetailView({ session, entries, exercises, lastByExercise, hasAct
         <div className="space-y-2">
           {displayEntries.map(entry => {
             const libEx = exercises?.find(e => e.name === entry.exercise);
-            const leveledUp = !editing && getProgressionStatus(entry, libEx)?.status === "bump";
+            const leveledUp = !editing && showLevelUpAlerts && getProgressionStatus(entry, libEx)?.status === "bump";
             const suffix = setUnitSuffix(libEx);
             const formatSets = (reps) => reps.map(r => `${r}${suffix}`).join(" · ");
             return editing ? (
@@ -2656,6 +2787,7 @@ function SessionDetailView({ session, entries, exercises, lastByExercise, hasAct
       {pendingNewExerciseName !== null && (
         <ExerciseEditModal
           initialName={pendingNewExerciseName}
+          defaultUnit={settings?.defaultUnit || "lb"}
           saveError={librarySaveError}
           onSave={handleSaveNewExerciseFromPicker}
           onCancel={() => setPendingNewExerciseName(null)}
@@ -2894,7 +3026,7 @@ function PlansView({ plans, onCreate, onEdit, onUse }) {
   );
 }
 
-function PlanEditView({ plan, exercises, lastByExercise, saveError, onSave, onDelete, onCancel, onCreateExercise }) {
+function PlanEditView({ plan, exercises, lastByExercise, defaultUnit, saveError, onSave, onDelete, onCancel, onCreateExercise }) {
   const [name, setName] = useState(plan?.name || "");
   const [description, setDescription] = useState(plan?.description || "");
   const [planExercises, setPlanExercises] = useState(plan?.exercises || []);
@@ -2932,6 +3064,7 @@ function PlanEditView({ plan, exercises, lastByExercise, saveError, onSave, onDe
       {pendingNewExerciseName !== null && (
         <ExerciseEditModal
           initialName={pendingNewExerciseName}
+          defaultUnit={defaultUnit}
           saveError={saveError}
           onSave={handleSaveNewExercise}
           onCancel={() => setPendingNewExerciseName(null)}
@@ -3125,7 +3258,7 @@ function ExerciseSearchSheet({ exercises, lastByExercise, excluded = [], onPick,
 }
 
 // --- PROFILE ---
-function ProfileView({ profile, sessions, history, exercises, onEdit }) {
+function ProfileView({ profile, sessions, history, exercises, onEdit, onOpenSettings }) {
   const initials = useMemo(() => profile.name.split(" ").map(p => p[0]).slice(0, 2).join("").toUpperCase(), [profile.name]);
 
   const memberFor = useMemo(() => {
@@ -3268,6 +3401,24 @@ function ProfileView({ profile, sessions, history, exercises, onEdit }) {
         <ProfileStat label="Volume" value={displayVolume} unit={profile.units === "imperial" ? "lb" : "kg"} />
       </div>
 
+      {/* Settings entry — sits between identity stats and the About card.
+          Same visual weight as the data-export card below. */}
+      <div className="mt-7">
+        <button
+          onClick={onOpenSettings}
+          className="w-full surface border border-soft card-shadow rounded-2xl p-4 flex items-center gap-3 hover:bg-navy-50 transition text-left"
+        >
+          <div className="w-10 h-10 rounded-xl flex items-center justify-center shrink-0" style={{ background: "var(--navy-50)" }}>
+            <Settings size={18} className="text-navy-700" />
+          </div>
+          <div className="flex-1 min-w-0">
+            <div className="font-semibold text-navy-900">Settings</div>
+            <div className="text-xs text-navy-500 mt-0.5">Theme, alerts, defaults, account</div>
+          </div>
+          <ChevronRight size={16} className="text-navy-300 shrink-0" />
+        </button>
+      </div>
+
       {/* Details */}
       <div className="mt-7">
         <div className="text-[10px] uppercase tracking-[0.18em] text-navy-500 mono font-medium mb-3">About</div>
@@ -3301,12 +3452,7 @@ function ProfileView({ profile, sessions, history, exercises, onEdit }) {
         </button>
       </div>
 
-      <button
-        onClick={signOut}
-        className="mt-8 w-full text-red-600 hover:text-red-700 py-3 text-sm font-medium flex items-center justify-center gap-2"
-      >
-        <LogOut size={14} /> Sign out
-      </button>
+      {/* Sign out moved to Settings → Account. */}
 
       {/* CSV fallback modal — shown when direct download isn't available (sandboxed previews) */}
       {csvFallback && (
@@ -3861,7 +4007,9 @@ function ExerciseDetailView({ entries, libEx, onEdit, onCustomize }) {
 }
 
 // --- ACTIVE WORKOUT ---
-function WorkoutView({ workout, setWorkout, exercises, lastByExercise, onCreateExercise, onFinish, librarySaveError }) {
+function WorkoutView({ workout, setWorkout, exercises, lastByExercise, settings, onCreateExercise, onFinish, librarySaveError }) {
+  const showLevelUpAlerts = settings?.showLevelUpAlerts ?? true;
+  const defaultUnit = settings?.defaultUnit || "lb";
   const [showPicker, setShowPicker] = useState(workout.exercises.length === 0 && workout.planQueue.length === 0);
   // The active exercise is derived from workout.currentExerciseName instead
   // of held in local state. That way the minimized bar (which reads from
@@ -3974,6 +4122,7 @@ function WorkoutView({ workout, setWorkout, exercises, lastByExercise, onCreateE
         {pendingNewExerciseName !== null && (
           <ExerciseEditModal
             initialName={pendingNewExerciseName}
+            defaultUnit={defaultUnit}
             saveError={librarySaveError}
             onSave={handleSaveNewExercise}
             onCancel={() => setPendingNewExerciseName(null)}
@@ -4010,6 +4159,7 @@ function WorkoutView({ workout, setWorkout, exercises, lastByExercise, onCreateE
       {workout.exercises[activeIdx] && (
         <ActiveExercise
           ex={workout.exercises[activeIdx]}
+          showLevelUpAlerts={showLevelUpAlerts}
           onUpdate={(patch) => updateExercise(activeIdx, patch)}
           onRemove={() => removeExercise(activeIdx)}
         />
@@ -4097,7 +4247,7 @@ function buildBlankExercise(name, libEx) {
   };
 }
 
-function ActiveExercise({ ex, onUpdate, onRemove }) {
+function ActiveExercise({ ex, showLevelUpAlerts = true, onUpdate, onRemove }) {
   const isBodyweight = ex.tracksWeight === false;
   const isTime = ex.trackingMode === "time";
   const setNoun = isTime ? "seconds" : "reps";
@@ -4191,12 +4341,12 @@ function ActiveExercise({ ex, onUpdate, onRemove }) {
     <div className="mt-5">
       <div className="mb-4">
         <div className="serif text-[26px] tracking-tight text-navy-900" style={{ fontWeight: 500, letterSpacing: "-0.02em" }}>{ex.exercise}</div>
-        {ex.bumped && (
+        {ex.bumped && showLevelUpAlerts && (
           <div className="mt-1 inline-flex items-center gap-1.5 text-[10px] uppercase tracking-wider mono font-semibold" style={{ color: "var(--accent)" }}>
             <Flame size={11} /> Bumped from {ex.lastWeight}{ex.unit}
           </div>
         )}
-        {ex.holdLonger && (
+        {ex.holdLonger && showLevelUpAlerts && (
           <div className="mt-1 inline-flex items-center gap-1.5 text-[10px] uppercase tracking-wider mono font-semibold" style={{ color: "var(--accent)" }}>
             <Flame size={11} /> Holding longer than last time
           </div>
@@ -4360,5 +4510,324 @@ function SetRow({ setNum, reps, lastReps, targetMax, unitSuffix = "", step = 1, 
         )}
       </div>
     </div>
+  );
+}
+
+// --- SETTINGS ---
+// Each section is a labeled group of rows on a card surface, mirroring
+// the existing Profile About / Your-data layout. onChange takes a partial
+// settings patch and bubbles up to App's updateSettings, which handles
+// the optimistic write + Supabase persist + rollback.
+function SettingsView({ settings, onChange, onDeleteAccount, saveError }) {
+  const [confirmSignOut, setConfirmSignOut] = useState(false);
+  // Auto-cancel the sign-out confirmation after 3s, matching the
+  // tap-to-confirm pattern used elsewhere (Delete buttons).
+  useEffect(() => {
+    if (!confirmSignOut) return;
+    const t = setTimeout(() => setConfirmSignOut(false), 3000);
+    return () => clearTimeout(t);
+  }, [confirmSignOut]);
+
+  return (
+    <div className="px-5 pb-28">
+      {saveError && (
+        <div
+          className="mt-5 rounded-xl px-3 py-2.5 text-xs leading-relaxed border"
+          style={{ background: "rgba(220, 38, 38, 0.05)", borderColor: "rgba(220, 38, 38, 0.2)", color: "#dc2626" }}
+        >
+          {saveError}
+        </div>
+      )}
+
+      {/* Appearance */}
+      <SettingsSection label="Appearance">
+        <SettingsRow icon={Sun} label="Theme" hint="Phase A: persists your choice. The dark mode visual swap lands in a follow-up.">
+          <div className="flex flex-wrap gap-1.5 mt-2">
+            <SettingsChip active={settings.theme === "light"} onClick={() => onChange({ theme: "light" })}>Light</SettingsChip>
+            <SettingsChip active={settings.theme === "dark"} onClick={() => onChange({ theme: "dark" })}>Dark</SettingsChip>
+            <SettingsChip active={settings.theme === "system"} onClick={() => onChange({ theme: "system" })}>System</SettingsChip>
+          </div>
+        </SettingsRow>
+      </SettingsSection>
+
+      {/* Workout Behavior */}
+      <SettingsSection label="Workout Behavior">
+        <SettingsRow icon={Flame} label="Show level-up alerts" hint="Hides the “Ready to level up” pills, the bumped-from indicators in active workouts, and the level-up dots on past sessions. Progression math still runs.">
+          <ToggleSwitch
+            on={settings.showLevelUpAlerts}
+            onChange={(v) => onChange({ showLevelUpAlerts: v })}
+            ariaLabel="Show level-up alerts"
+          />
+        </SettingsRow>
+      </SettingsSection>
+
+      {/* Home Stats */}
+      <SettingsSection label="Home Stats" hint="Toggling a stat off shows “—” instead of the number; the tile keeps its place.">
+        <SettingsRow icon={TrendingUp} label="Show Volume">
+          <ToggleSwitch
+            on={settings.visibleHomeStats.volume}
+            onChange={(v) => onChange({ visibleHomeStats: { volume: v } })}
+            ariaLabel="Show Volume"
+          />
+        </SettingsRow>
+        <SettingsRow icon={Activity} label="Show Sets">
+          <ToggleSwitch
+            on={settings.visibleHomeStats.sets}
+            onChange={(v) => onChange({ visibleHomeStats: { sets: v } })}
+            ariaLabel="Show Sets"
+          />
+        </SettingsRow>
+        <SettingsRow icon={ListChecks} label="Show Reps">
+          <ToggleSwitch
+            on={settings.visibleHomeStats.reps}
+            onChange={(v) => onChange({ visibleHomeStats: { reps: v } })}
+            ariaLabel="Show Reps"
+          />
+        </SettingsRow>
+      </SettingsSection>
+
+      {/* Defaults */}
+      <SettingsSection label="Defaults">
+        <SettingsRow icon={Ruler} label="Default unit for new exercises" hint="Pre-fills the Unit field on the new-exercise form. You can still override per-exercise.">
+          <div className="flex gap-1.5 mt-2">
+            <SettingsChip active={settings.defaultUnit === "lb"} onClick={() => onChange({ defaultUnit: "lb" })}>lb</SettingsChip>
+            <SettingsChip active={settings.defaultUnit === "kg"} onClick={() => onChange({ defaultUnit: "kg" })}>kg</SettingsChip>
+          </div>
+        </SettingsRow>
+      </SettingsSection>
+
+      {/* Account */}
+      <SettingsSection label="Account">
+        <button
+          onClick={async () => {
+            if (!confirmSignOut) {
+              setConfirmSignOut(true);
+              return;
+            }
+            await signOut();
+          }}
+          className="w-full p-4 flex items-center gap-3 transition text-left hover:bg-navy-50"
+          style={{ borderTop: "0" }}
+        >
+          <div className="w-10 h-10 rounded-xl flex items-center justify-center shrink-0" style={{ background: "var(--navy-50)" }}>
+            <LogOut size={18} className="text-navy-700" />
+          </div>
+          <div className="flex-1 min-w-0">
+            <div className="font-semibold text-navy-900">{confirmSignOut ? "Tap to confirm sign out" : "Sign out"}</div>
+            <div className="text-xs text-navy-500 mt-0.5">
+              {confirmSignOut ? "Your data is safe — sign back in any time." : "Sign out of Spotter on this device."}
+            </div>
+          </div>
+        </button>
+        <button
+          onClick={onDeleteAccount}
+          className="w-full p-4 flex items-center gap-3 transition text-left hover:bg-navy-50 border-t"
+          style={{ borderColor: "var(--border)" }}
+        >
+          <div className="w-10 h-10 rounded-xl flex items-center justify-center shrink-0" style={{ background: "rgba(220, 38, 38, 0.08)" }}>
+            <AlertTriangle size={18} style={{ color: "#dc2626" }} />
+          </div>
+          <div className="flex-1 min-w-0">
+            <div className="font-semibold" style={{ color: "#dc2626" }}>Delete account</div>
+            <div className="text-xs text-navy-500 mt-0.5">Permanently remove your data from Spotter.</div>
+          </div>
+          <ChevronRight size={16} className="text-navy-300 shrink-0" />
+        </button>
+      </SettingsSection>
+
+      {/* About */}
+      <SettingsSection label="About">
+        <div className="p-4 flex items-center gap-3">
+          <div className="w-10 h-10 rounded-xl flex items-center justify-center shrink-0" style={{ background: "var(--navy-50)" }}>
+            <Sparkles size={18} className="text-navy-700" />
+          </div>
+          <div className="flex-1 min-w-0">
+            <div className="font-semibold text-navy-900">Spotter</div>
+            <div className="text-xs text-navy-500 mt-0.5 mono">version {APP_VERSION}</div>
+          </div>
+        </div>
+      </SettingsSection>
+    </div>
+  );
+}
+
+function SettingsSection({ label, hint, children }) {
+  return (
+    <div className="mt-7">
+      <div className="text-[10px] uppercase tracking-[0.18em] text-navy-500 mono font-medium mb-3">{label}</div>
+      <div className="surface border border-soft card-shadow rounded-2xl divide-y overflow-hidden" style={{ borderColor: "var(--border)" }}>
+        {children}
+      </div>
+      {hint && <div className="text-[11px] text-navy-400 leading-relaxed mt-2 px-1">{hint}</div>}
+    </div>
+  );
+}
+
+function SettingsRow({ icon: Icon, label, hint, children }) {
+  return (
+    <div className="p-4 flex items-start gap-3">
+      <div className="w-10 h-10 rounded-xl flex items-center justify-center shrink-0" style={{ background: "var(--navy-50)" }}>
+        <Icon size={18} className="text-navy-700" />
+      </div>
+      <div className="flex-1 min-w-0">
+        <div className="font-semibold text-navy-900">{label}</div>
+        {hint && <div className="text-xs text-navy-500 mt-0.5 leading-relaxed">{hint}</div>}
+        {children}
+      </div>
+    </div>
+  );
+}
+
+function SettingsChip({ active, onClick, children }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className="shrink-0 px-3 py-1.5 rounded-full text-xs whitespace-nowrap border transition font-medium"
+      style={{
+        background: active ? "var(--navy-900)" : "var(--surface)",
+        color: active ? "white" : "var(--navy-600)",
+        borderColor: active ? "var(--navy-900)" : "var(--border)",
+      }}
+    >
+      {children}
+    </button>
+  );
+}
+
+// Toggle switch — visual swap at ~10% scale of an iOS-style switch.
+// Tappable on the whole element.
+function ToggleSwitch({ on, onChange, ariaLabel }) {
+  return (
+    <button
+      type="button"
+      role="switch"
+      aria-checked={on}
+      aria-label={ariaLabel}
+      onClick={() => onChange(!on)}
+      className="shrink-0 w-11 h-6 rounded-full relative transition"
+      style={{ background: on ? "var(--navy-900)" : "var(--border-strong)" }}
+    >
+      <span
+        className="absolute top-0.5 w-5 h-5 rounded-full bg-white shadow transition-all"
+        style={{ left: on ? "calc(100% - 1.375rem)" : "0.125rem" }}
+      />
+    </button>
+  );
+}
+
+// --- DELETE ACCOUNT FLOW ---
+// Two-step confirmation: an explicit warning, then a re-auth prompt that
+// verifies the user can sign in with their current credentials before we
+// run any DELETE. Re-auth uses signInWithPassword — Supabase happily
+// re-authenticates a user who's already signed in, returning success or
+// an "Invalid login credentials" error we can surface inline.
+function DeleteAccountView({ email: initialEmail, onCancel, onDelete, deleteError }) {
+  const [step, setStep] = useState("warn"); // 'warn' | 'reauth'
+  const [email, setEmail] = useState(initialEmail || "");
+  const [password, setPassword] = useState("");
+  const [authError, setAuthError] = useState(null);
+  const [submitting, setSubmitting] = useState(false);
+
+  if (step === "warn") {
+    return (
+      <div className="px-5 pb-28">
+        <div className="mt-7 surface border border-soft card-shadow rounded-2xl p-5">
+          <div className="w-12 h-12 rounded-2xl flex items-center justify-center mb-4" style={{ background: "rgba(220, 38, 38, 0.08)" }}>
+            <AlertTriangle size={22} style={{ color: "#dc2626" }} />
+          </div>
+          <div className="serif text-2xl text-navy-900 mb-2" style={{ fontWeight: 500 }}>Delete your Spotter account?</div>
+          <div className="text-sm text-navy-600 leading-relaxed">
+            This permanently removes your profile, exercises you've created, plans, and all workout history. This cannot be undone.
+          </div>
+          <div className="text-xs text-navy-500 mt-3 leading-relaxed">
+            The public exercise catalog stays available — only the rows you own get deleted.
+          </div>
+        </div>
+        <BottomBar>
+          <button onClick={onCancel} className="flex-1 py-3 rounded-xl border border-soft text-navy-700 font-medium text-sm">Cancel</button>
+          <button
+            onClick={() => setStep("reauth")}
+            className="flex-1 py-3 rounded-xl text-white font-semibold text-sm transition"
+            style={{ background: "#dc2626" }}
+          >
+            Continue
+          </button>
+        </BottomBar>
+      </div>
+    );
+  }
+
+  // step === "reauth"
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    setAuthError(null);
+    setSubmitting(true);
+    const { error } = await supabase.auth.signInWithPassword({ email, password });
+    if (error) {
+      setSubmitting(false);
+      setAuthError(error.message || "Couldn't verify your credentials.");
+      return;
+    }
+    // Credentials valid — proceed with the actual deletion.
+    const ok = await onDelete();
+    setSubmitting(false);
+    // On success App's signOut path takes over (component unmounts as
+    // the auth gate flips). On failure, deleteError surfaces from the
+    // parent below.
+    if (!ok) {
+      // Stay on this screen so the user sees the error.
+    }
+  };
+
+  return (
+    <form onSubmit={handleSubmit} className="px-5 pb-28">
+      <div className="mt-7 surface border border-soft card-shadow rounded-2xl p-5 space-y-4">
+        <div className="text-sm text-navy-700 leading-relaxed">
+          Re-enter your password to confirm. We don't ask for it elsewhere — this is a one-time check before deletion.
+        </div>
+        <div>
+          <div className="text-[10px] uppercase tracking-[0.18em] text-navy-500 mono font-medium mb-2">Email</div>
+          <input
+            type="email"
+            autoComplete="email"
+            required
+            value={email}
+            onChange={e => setEmail(e.target.value)}
+            className="w-full surface-2 border border-soft rounded-xl px-4 py-3 text-base focus:outline-none focus:border-strong text-navy-900"
+          />
+        </div>
+        <div>
+          <div className="text-[10px] uppercase tracking-[0.18em] text-navy-500 mono font-medium mb-2">Password</div>
+          <input
+            type="password"
+            autoComplete="current-password"
+            required
+            value={password}
+            onChange={e => setPassword(e.target.value)}
+            className="w-full surface-2 border border-soft rounded-xl px-4 py-3 text-base focus:outline-none focus:border-strong text-navy-900"
+          />
+        </div>
+        {(authError || deleteError) && (
+          <div
+            className="rounded-xl px-3 py-2.5 text-xs leading-relaxed border"
+            style={{ background: "rgba(220, 38, 38, 0.05)", borderColor: "rgba(220, 38, 38, 0.2)", color: "#dc2626" }}
+          >
+            {authError || deleteError}
+          </div>
+        )}
+      </div>
+      <BottomBar>
+        <button type="button" onClick={onCancel} disabled={submitting} className="flex-1 py-3 rounded-xl border border-soft text-navy-700 font-medium text-sm disabled:opacity-60">Cancel</button>
+        <button
+          type="submit"
+          disabled={submitting || !email || !password}
+          className="flex-1 py-3 rounded-xl text-white font-semibold text-sm disabled:opacity-50 transition"
+          style={{ background: "#dc2626" }}
+        >
+          {submitting ? "Deleting…" : "Delete account"}
+        </button>
+      </BottomBar>
+    </form>
   );
 }

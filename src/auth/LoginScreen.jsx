@@ -7,6 +7,19 @@ export function LoginScreen({ onSwitchToSignup, onSwitchToForgot }) {
   const [password, setPassword] = useState("");
   const [error, setError] = useState(null);
   const [submitting, setSubmitting] = useState(false);
+  // Flash message read once on mount: set by the account-delete flow
+  // before signing the user out. Stays visible until the screen
+  // unmounts (sign-in success or switch to signup). The sessionStorage
+  // key clears on first read so re-mounts don't replay it.
+  const [accountDeletedFlash] = useState(() => {
+    try {
+      if (sessionStorage.getItem("flash:accountDeleted") === "1") {
+        sessionStorage.removeItem("flash:accountDeleted");
+        return true;
+      }
+    } catch {}
+    return false;
+  });
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -21,6 +34,15 @@ export function LoginScreen({ onSwitchToSignup, onSwitchToForgot }) {
 
   return (
     <AuthLayout subtitle="Let's get back to work.">
+      {accountDeletedFlash && (
+        <div
+          className="mb-4 rounded-xl px-4 py-3 text-xs leading-relaxed border"
+          style={{ background: "rgba(31, 138, 95, 0.06)", borderColor: "rgba(31, 138, 95, 0.25)", color: "var(--success)" }}
+          role="status"
+        >
+          Account deleted. You can sign in with another account or create a new one below.
+        </div>
+      )}
       <form
         onSubmit={handleSubmit}
         className="surface border border-soft card-shadow rounded-2xl p-6 space-y-4"
