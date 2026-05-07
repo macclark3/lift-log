@@ -1545,12 +1545,15 @@ function MinimizedWorkoutBar({ workout, onResume }) {
   }, []);
 
   const elapsed = workout.startedAt ? formatDuration(now - new Date(workout.startedAt).getTime()) : "0:00";
-  const exCount = workout.exercises?.length || 0;
-  // No activeIdx is persisted on the workout itself today (it lives in
-  // WorkoutView's local state). Default to the last exercise — that's what
-  // the workout view itself opens to on remount, so the bar stays in sync.
-  const activeIdx = exCount > 0 ? exCount - 1 : 0;
-  const activeName = workout.exercises?.[activeIdx]?.exercise || "Workout";
+  // currentExerciseName is the exercise the user was viewing when they
+  // minimized (or last navigated to). Falls back to the last exercise when
+  // the field is missing (legacy in-flight workouts persisted before this
+  // tracking landed) or when the named exercise was since removed.
+  const exercises = workout.exercises || [];
+  const currentName = workout.currentExerciseName;
+  const activeName = (currentName && exercises.find(e => e.exercise === currentName)?.exercise)
+    || exercises[exercises.length - 1]?.exercise
+    || "Workout";
 
   return (
     <div className="px-3 pt-2 pb-1">
@@ -3860,7 +3863,23 @@ function ExerciseDetailView({ entries, libEx, onEdit, onCustomize }) {
 // --- ACTIVE WORKOUT ---
 function WorkoutView({ workout, setWorkout, exercises, lastByExercise, onCreateExercise, onFinish, librarySaveError }) {
   const [showPicker, setShowPicker] = useState(workout.exercises.length === 0 && workout.planQueue.length === 0);
-  const [activeIdx, setActiveIdx] = useState(Math.max(0, workout.exercises.length - 1));
+  // The active exercise is derived from workout.currentExerciseName instead
+  // of held in local state. That way the minimized bar (which reads from
+  // workout state) always matches what the user was viewing — and the
+  // value survives a cold app reload via localStorage. Falls back to the
+  // last exercise when the name doesn't match anything (legacy workouts
+  // from before this field existed, or the named exercise was removed).
+  const activeIdx = useMemo(() => {
+    if (workout.exercises.length === 0) return 0;
+    const idx = workout.currentExerciseName
+      ? workout.exercises.findIndex(e => e.exercise === workout.currentExerciseName)
+      : -1;
+    return idx >= 0 ? idx : workout.exercises.length - 1;
+  }, [workout.currentExerciseName, workout.exercises]);
+  const setActiveExercise = (idx) => {
+    const name = workout.exercises[idx]?.exercise;
+    if (name) setWorkout({ ...workout, currentExerciseName: name });
+  };
   const [showFinish, setShowFinish] = useState(false);
   // Resumed workouts pre-fill the original session name so the user
   // doesn't have to retype it. New workouts start blank as before.
@@ -3890,8 +3909,15 @@ function WorkoutView({ workout, setWorkout, exercises, lastByExercise, onCreateE
         const libEx = exercises.find(e => e.name === name);
         return last ? buildExerciseFromHistory(last, libEx) : buildBlankExercise(name, libEx);
       });
-      setWorkout({ ...workout, exercises: queueExercises, planQueue: [] });
-      setActiveIdx(0);
+      // Bundle the exercises swap with the initial currentExerciseName so
+      // the minimized bar can pick up the right name on first minimize
+      // without a stale-state flicker.
+      setWorkout({
+        ...workout,
+        exercises: queueExercises,
+        planQueue: [],
+        currentExerciseName: queueExercises[0]?.exercise || null,
+      });
     }
     // eslint-disable-next-line
   }, []);
@@ -3901,8 +3927,9 @@ function WorkoutView({ workout, setWorkout, exercises, lastByExercise, onCreateE
     const libEx = exercises.find(e => e.name === exerciseName);
     const newExercise = last ? buildExerciseFromHistory(last, libEx) : buildBlankExercise(exerciseName, libEx);
     const newExercises = [...workout.exercises, newExercise];
-    setWorkout({ ...workout, exercises: newExercises });
-    setActiveIdx(newExercises.length - 1);
+    // Newly added exercise becomes the active one — same behavior as
+    // before, just persisted on the workout itself.
+    setWorkout({ ...workout, exercises: newExercises, currentExerciseName: newExercise.exercise });
     setShowPicker(false);
   };
 
@@ -3924,13 +3951,18 @@ function WorkoutView({ workout, setWorkout, exercises, lastByExercise, onCreateE
 
   const removeExercise = (idx) => {
     const updated = workout.exercises.filter((_, i) => i !== idx);
-    setWorkout({ ...workout, exercises: updated });
-    // After removing, focus the previous exercise (or the new last one)
+    // Pick the same focus rule as before (previous exercise, or new last
+    // when removing past the end), translated to a name.
+    let nextIdx;
     if (activeIdx >= updated.length) {
-      setActiveIdx(Math.max(0, updated.length - 1));
+      nextIdx = Math.max(0, updated.length - 1);
     } else if (idx <= activeIdx && activeIdx > 0) {
-      setActiveIdx(activeIdx - 1);
+      nextIdx = activeIdx - 1;
+    } else {
+      nextIdx = activeIdx;
     }
+    const nextName = updated[nextIdx]?.exercise || null;
+    setWorkout({ ...workout, exercises: updated, currentExerciseName: nextName });
     // If we just removed the last exercise, open the picker so the workout isn't empty
     if (updated.length === 0) setShowPicker(true);
   };
@@ -3960,7 +3992,7 @@ function WorkoutView({ workout, setWorkout, exercises, lastByExercise, onCreateE
             return (
               <button
                 key={i}
-                onClick={() => setActiveIdx(i)}
+                onClick={() => setActiveExercise(i)}
                 className="shrink-0 px-3 py-1.5 rounded-full text-xs whitespace-nowrap border transition font-medium"
                 style={{
                   background: i === activeIdx ? "var(--navy-900)" : "var(--surface)",
