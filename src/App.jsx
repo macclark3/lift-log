@@ -215,6 +215,10 @@ function mapRowToExercise(row) {
   return {
     id: row.id,
     name: row.name || "",
+    // Optional human-readable blurb. Populated for every public catalog
+    // row; null for most user-created rows until they fill it in. Pickers
+    // and the active workout render it as a caption when present.
+    description: row.description || null,
     targetReps: [row.target_reps_min ?? 0, row.target_reps_max ?? 0],
     unit: row.unit || "lb",
     muscle: row.muscle || null,
@@ -240,6 +244,7 @@ function exerciseToDbRow(ex, userId) {
   return {
     user_id: userId,
     name: ex.name || null,
+    description: ex.description || null,
     target_reps_min: ex.targetReps?.[0] ?? null,
     target_reps_max: ex.targetReps?.[1] ?? null,
     unit: ex.unit ?? null,
@@ -258,6 +263,7 @@ function exerciseToDbRow(ex, userId) {
 function exerciseToDbPatch(patch) {
   const out = {};
   if ("name" in patch) out.name = patch.name || null;
+  if ("description" in patch) out.description = patch.description || null;
   if ("targetReps" in patch) {
     out.target_reps_min = patch.targetReps?.[0] ?? null;
     out.target_reps_max = patch.targetReps?.[1] ?? null;
@@ -483,6 +489,10 @@ export default function App() {
     if (!source) return null;
     const created = await addExerciseToLibrary({
       name: source.name,
+      // Carry the public catalog's description into the private copy so
+      // the user starts from the curated blurb rather than a blank field.
+      // They can edit or clear it from the edit form.
+      description: source.description || null,
       muscle: source.muscle,
       equipment: source.equipment,
       targetReps: source.targetReps,
@@ -2029,6 +2039,12 @@ function LibraryView({ exercises, lastByExercise, onCreate, onEdit, onSelect }) 
                 <div key={ex.id} className="surface border border-soft rounded-xl flex items-center gap-2 group transition hover:bg-navy-50">
                   <button onClick={() => onSelect(ex.name)} className="flex-1 text-left p-3.5 min-w-0">
                     <div className="font-medium text-navy-900 truncate">{ex.name}</div>
+                    {/* Description sits between the name and the mono meta
+                        row when present. Truncated to a single line so
+                        long blurbs don't blow up the row height. */}
+                    {ex.description && (
+                      <div className="text-xs text-navy-500 truncate mt-0.5">{ex.description}</div>
+                    )}
                     <div className="flex items-center gap-1.5 mt-1 text-xs text-navy-500 mono">
                       <span>{ex.targetReps[0]}–{ex.targetReps[1]} {isTimeTracked(ex) ? "sec" : "reps"}</span>
                       <span style={{ color: "var(--navy-200)" }}>·</span>
@@ -2077,6 +2093,10 @@ function FilterChip({ active, onClick, children }) {
 // --- EXERCISE EDIT ---
 function ExerciseEditView({ exercise, initialName, defaultUnit = "lb", saveError, onSave, onDelete, onCustomize, onCancel }) {
   const [name, setName] = useState(exercise?.name || initialName || "");
+  // Optional human blurb. Carried over from the public source on
+  // Customize; otherwise the user can write their own. Stored as null
+  // when empty so the picker / active workout don't render blank lines.
+  const [description, setDescription] = useState(exercise?.description || "");
   const [muscle, setMuscle] = useState(exercise?.muscle || "Chest");
   const [equipment, setEquipment] = useState(exercise?.equipment || "Barbell");
   const [minReps, setMinReps] = useState(exercise?.targetReps[0] ?? 8);
@@ -2126,6 +2146,16 @@ function ExerciseEditView({ exercise, initialName, defaultUnit = "lb", saveError
       <fieldset disabled={readOnly} className="mt-5 space-y-4 min-w-0 border-0 p-0 m-0" style={{ opacity: readOnly ? 0.85 : 1 }}>
         <Field label="Exercise name">
           <input value={name} onChange={e => setName(e.target.value)} placeholder="e.g. Romanian Deadlift" autoFocus={!exercise && !readOnly} className="w-full surface border border-soft rounded-xl px-4 py-3 text-base focus:outline-none focus:border-strong text-navy-900" />
+        </Field>
+
+        <Field label="Description" hint="A short note about form cues, setup, or what makes this exercise feel right. Shows in the picker and during workouts.">
+          <textarea
+            value={description}
+            onChange={e => setDescription(e.target.value)}
+            placeholder="e.g. Pause briefly at the bottom; squeeze the lats."
+            rows={3}
+            className="w-full surface border border-soft rounded-xl px-4 py-3 text-sm text-navy-900 resize-none focus:outline-none focus:border-strong"
+          />
         </Field>
 
         <Field label="Muscle group">
@@ -2277,7 +2307,7 @@ function ExerciseEditView({ exercise, initialName, defaultUnit = "lb", saveError
           </button>
         ) : (
           <button
-            onClick={() => canSave && onSave({ id: exercise?.id, name: name.trim(), muscle, equipment, targetReps: [minReps, maxReps], unit, tracksWeight, trackingMode, bumpRule, increment })}
+            onClick={() => canSave && onSave({ id: exercise?.id, name: name.trim(), description: description.trim() || null, muscle, equipment, targetReps: [minReps, maxReps], unit, tracksWeight, trackingMode, bumpRule, increment })}
             disabled={!canSave}
             className="flex-1 py-3 rounded-xl text-white font-semibold text-sm disabled:opacity-30 transition"
             style={{ background: "var(--primary)" }}
@@ -3244,6 +3274,11 @@ function ExerciseSearchSheet({ exercises, lastByExercise, excluded = [], onPick,
                 <button key={ex.id} onClick={() => onPick(ex.name)} className="w-full surface-2 hover:bg-navy-50 border border-soft rounded-xl p-3 text-left transition flex items-center gap-3">
                   <div className="flex-1 min-w-0">
                     <div className="font-medium text-navy-900 truncate">{ex.name}</div>
+                    {/* Description (when set) reads above the mono meta
+                        row — same hierarchy as LibraryView. */}
+                    {ex.description && (
+                      <div className="text-[11px] text-navy-500 truncate mt-0.5">{ex.description}</div>
+                    )}
                     <div className="flex items-center gap-1.5 mt-0.5 text-[11px] text-navy-500 mono">
                       {ex.muscle && <span>{ex.muscle}</span>}
                       {last && <><span style={{ color: "var(--navy-200)" }}>·</span><span>{last.weight > 0 ? `${last.weight}${ex.unit} ` : ""}last {formatDate(last.date)}</span></>}
@@ -3917,6 +3952,15 @@ function ExerciseDetailView({ entries, libEx, onEdit, onCustomize }) {
 
   return (
     <div className="px-5 pb-20">
+      {/* Description (when set) reads as a quiet card just above the
+          Defaults grid. Public catalog rows always have one; private
+          rows only after the user fills it in. */}
+      {libEx.description && (
+        <div className="mt-5 surface border border-soft card-shadow rounded-2xl p-4 text-sm text-navy-700 leading-relaxed">
+          {libEx.description}
+        </div>
+      )}
+
       {/* About card — always rendered, even when there's no history. This
           is the screen's primary content for any exercise the user hasn't
           logged yet (most relevant for the public catalog). */}
@@ -4245,6 +4289,10 @@ function buildExerciseFromHistory(sourceEntry, libEx) {
     : sourceEntry.weight;
   return {
     exercise: sourceEntry.exercise,
+    // Description snapshotted from the library at workout-start time.
+    // Lives on the active-workout entry so ActiveExercise can render it
+    // without needing the exercises array threaded down.
+    description: libEx?.description || null,
     weight: startWeight,
     lastWeight: sourceEntry.weight,
     lastReps: sourceEntry.reps,
@@ -4266,7 +4314,9 @@ function buildExerciseFromHistory(sourceEntry, libEx) {
 
 function buildBlankExercise(name, libEx) {
   return {
-    exercise: name, weight: 0, lastWeight: null, lastReps: [], lastDate: null,
+    exercise: name,
+    description: libEx?.description || null,
+    weight: 0, lastWeight: null, lastReps: [], lastDate: null,
     targetReps: libEx?.targetReps || [8, 12], unit: libEx?.unit || "lb",
     tracksWeight: tracksWeightFor(libEx),
     trackingMode: trackingModeFor(libEx),
@@ -4369,6 +4419,13 @@ function ActiveExercise({ ex, showLevelUpAlerts = true, onUpdate, onRemove }) {
     <div className="mt-5">
       <div className="mb-4">
         <div className="serif text-[26px] tracking-tight text-navy-900" style={{ fontWeight: 500, letterSpacing: "-0.02em" }}>{ex.exercise}</div>
+        {/* Description (when set) reads as a small caption below the
+            exercise name. Multi-line allowed — short enough that it
+            won't dominate the active view. Shown for both public and
+            private exercises that have one. */}
+        {ex.description && (
+          <div className="mt-1 text-xs text-navy-500 leading-relaxed">{ex.description}</div>
+        )}
         {ex.bumped && showLevelUpAlerts && (
           <div className="mt-1 inline-flex items-center gap-1.5 text-[10px] uppercase tracking-wider mono font-semibold" style={{ color: "var(--accent)" }}>
             <Flame size={11} /> Bumped from {ex.lastWeight}{ex.unit}
