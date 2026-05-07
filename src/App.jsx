@@ -117,44 +117,19 @@ function formatDuration(ms) {
   return `${m}:${String(s).padStart(2,"0")}`;
 }
 
-// Synchronous read of the per-user onboarded flag, with a one-time migration
-// for accounts that completed welcome before the flag was per-user.
+// Profile is "complete enough" to skip the welcome flow when the canonical
+// must-set fields all have values. This is the source of truth for whether
+// a user has been onboarded — the per-user localStorage flag below is just
+// a fast-path cache.
 //
-// Returns:
-//   null  — no session
-//   false — initialized but onboarding not complete (show welcome)
-//   true  — onboarded (show main app)
-//
-// Side effect: when the migration condition is met, writes the per-user
-// onboarded flag so subsequent reads short-circuit. Idempotent.
-function readUserOnboarded(session) {
-  if (!session) return null;
-  const initKey = `liftlog:initialized:${session.user.id}`;
-  const onboardedKey = `liftlog:onboarded:${session.user.id}`;
-  // Not initialized yet — the wipe will run and we'll come back through here.
-  if (!localStorage.getItem(initKey)) return false;
-  if (localStorage.getItem(onboardedKey) === "true") return true;
-  // Migration: users who completed welcome under the legacy mechanism set
-  // profile.onboarded=true; users who entered any field also count. Either
-  // way, treat them as onboarded so they don't hit the welcome screen again.
-  const profileStr = localStorage.getItem("liftlog:profile");
-  let p = null;
-  try { p = profileStr ? JSON.parse(profileStr) : null; } catch { p = null; }
-  const hasPriorData = !!(p && (
-    p.onboarded === true ||
-    p.name ||
-    p.heightCm ||
-    p.weightKg ||
-    p.gender ||
-    p.homeGym ||
-    p.experienceLevel ||
-    p.dateOfBirth
-  ));
-  if (hasPriorData) {
-    localStorage.setItem(onboardedKey, "true");
-    return true;
-  }
-  return false;
+// Why this list: name powers the profile bubble + greeting; height and
+// weight are the two body-metric fields the welcome form mandates. DOB is
+// excluded because it's set during signup itself, before welcome runs.
+function isProfileComplete(profile) {
+  if (!profile) return false;
+  return !!(profile.name && profile.name.trim()) &&
+    profile.heightCm != null &&
+    profile.weightKg != null;
 }
 
 // Map a row from the Supabase `profiles` table back to the app's camelCase
@@ -961,6 +936,7 @@ export default function App() {
       setInitialDataError(null);
       setProfileSaveError(null);
       setLibrarySaveError(null);
+      setDismissedOnboarding(false);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [session]);
@@ -971,10 +947,27 @@ export default function App() {
   // appears here, then never again for that user.
   const userInitKey = session ? `liftlog:initialized:${session.user.id}` : null;
   const userInitialized = userInitKey ? !!localStorage.getItem(userInitKey) : null;
-  // Onboarded flag is per-user (keyed by userId) so it doesn't leak across
-  // different accounts on the same device. readUserOnboarded also handles
-  // the one-time migration for accounts that pre-date the per-user keying.
-  const userOnboarded = readUserOnboarded(session);
+  // Onboarded check combines a real profile-completeness signal with a
+  // per-user localStorage cache. The profile check is the source of truth:
+  //   - Fresh signup (profile name/height/weight all null) → not onboarded,
+  //     show welcome regardless of any stale flag from a previous user.
+  //   - Existing user with complete Supabase profile → onboarded even if
+  //     localStorage was wiped (e.g. on a new device).
+  //   - Continue with any data → flag set in finishOnboarding so subsequent
+  //     sign-ins skip the profile check (perf cache).
+  //   - Skip → flag NOT set, profile still incomplete → next sign-in
+  //     re-prompts the welcome flow.
+  // Old behavior used a heuristic over the device-shared liftlog:profile
+  // legacy localStorage key, which falsely marked fresh users as onboarded
+  // when ANY pre-Supabase data existed on the device.
+  const onboardedFlagKey = session ? `liftlog:onboarded:${session.user.id}` : null;
+  const onboardedFlagSet = onboardedFlagKey ? localStorage.getItem(onboardedFlagKey) === "true" : false;
+  const userOnboarded = session ? (isProfileComplete(profile) || onboardedFlagSet) : null;
+  // Skip is in-memory only — it dismisses the welcome screen for the
+  // current session but does NOT persist. Next sign-in (or page refresh)
+  // re-evaluates against the still-incomplete profile and re-prompts.
+  // Cleared on sign-out below so a new sign-in starts fresh.
+  const [dismissedOnboarding, setDismissedOnboarding] = useState(false);
 
   // First time we see this user on this device: wipe per-user localStorage
   // back to a clean state before they (or anyone else) sees the main app.
@@ -989,6 +982,17 @@ export default function App() {
     localStorage.setItem(userInitKey, "1");
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [session, userInitialized]);
+
+  // Cache the onboarded flag whenever we observe a complete profile (e.g.
+  // an existing user signing in on a new device). Lets future renders
+  // short-circuit without re-deriving completeness from the profile.
+  useEffect(() => {
+    if (!onboardedFlagKey || onboardedFlagSet) return;
+    if (isProfileComplete(profile)) {
+      localStorage.setItem(onboardedFlagKey, "true");
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [profile, onboardedFlagKey, onboardedFlagSet]);
 
   // Single fetch effect that loads everything the app needs to render the
   // home screen: profile, exercises, plans. All three run in parallel.
@@ -1109,15 +1113,22 @@ export default function App() {
 
   const finishOnboarding = async (patch) => {
     if (!session) return;
-    if (Object.keys(patch).length > 0) {
+    const isSkip = Object.keys(patch).length === 0;
+    if (!isSkip) {
       const ok = await updateProfile(patch);
       if (!ok) return; // user stays on welcome; saveError surfaces in the form
+      // Continue with any data → cache the onboarded flag so subsequent
+      // sign-ins skip the profile-completeness check. Even if the user
+      // didn't fill in every field, tapping Continue is an explicit
+      // "I'm done with welcome" — respect that.
+      localStorage.setItem(`liftlog:onboarded:${session.user.id}`, "true");
+      return;
     }
-    localStorage.setItem(`liftlog:onboarded:${session.user.id}`, "true");
-    // userOnboarded is a synchronous read of localStorage that re-evaluates on
-    // every render; force a re-render so it picks up the new flag. The Skip
-    // path doesn't go through updateProfile so we have to nudge state here.
-    setProfile(p => p ? { ...p } : p);
+    // Skip: deliberately don't persist anything. Set the in-memory
+    // dismissedOnboarding flag so the gate falls through to home for
+    // this session, but on next sign-in / refresh the profile is still
+    // incomplete and the flag is still missing → welcome re-prompts.
+    setDismissedOnboarding(true);
   };
 
   let authShell = null;
@@ -1127,7 +1138,7 @@ export default function App() {
   else if (initialDataError) authShell = <ProfileLoadError onRetry={retryInitialDataFetch} />;
   else if (!initialDataLoaded) authShell = <AuthLoading />;
   else if (!userInitialized) authShell = <AuthLoading />;
-  else if (!userOnboarded) {
+  else if (!userOnboarded && !dismissedOnboarding) {
     authShell = <OnboardingScreen onComplete={finishOnboarding} saveError={profileSaveError} />;
   }
 
