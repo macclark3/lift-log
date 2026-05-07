@@ -37,7 +37,7 @@ export function LoginScreen({ onSwitchToSignup, onSwitchToForgot }) {
       {accountDeletedFlash && (
         <div
           className="mb-4 rounded-xl px-4 py-3 text-xs leading-relaxed border"
-          style={{ background: "rgba(31, 138, 95, 0.06)", borderColor: "rgba(31, 138, 95, 0.25)", color: "var(--success)" }}
+          style={{ background: "var(--success-bg)", borderColor: "var(--success-border)", color: "var(--success)" }}
           role="status"
         >
           Account deleted. You can sign in with another account or create a new one below.
@@ -72,7 +72,7 @@ export function LoginScreen({ onSwitchToSignup, onSwitchToForgot }) {
           type="submit"
           disabled={submitting}
           className="w-full text-white py-3.5 rounded-xl font-semibold text-sm disabled:opacity-60 transition"
-          style={{ background: "var(--navy-900)" }}
+          style={{ background: "var(--primary)" }}
         >
           {submitting ? "Signing in…" : "Sign in"}
         </button>

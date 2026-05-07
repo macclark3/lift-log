@@ -2,6 +2,196 @@
 @tailwind components;
 @tailwind utilities;
 
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600;9..144,700&family=JetBrains+Mono:wght@400;500;600&display=swap');
+
+/* --- THEME PALETTE ---
+   Light mode lives on :root. Dark mode lives on [data-theme="dark"] and
+   redefines the same variables. App.jsx applies the data-theme attribute
+   to <html> based on the user's settings.theme + prefers-color-scheme.
+
+   Tokens are split into:
+   - Navy tints (--navy-50…900): kept for compat with all the
+     text-navy-N / bg-navy-N classes already in use. In dark mode the
+     scale inverts so "navy-900" reads as the off-white text color.
+   - Surfaces / borders (--bg, --surface, --surface-2, --border,
+     --border-strong): backgrounds and dividers.
+   - Accents (--accent, --success, --destructive, --warning): the
+     celebrate / status / destructive colors. Gold flips to orange in
+     dark mode per the approved palette.
+   - Composed (--hero-bg, --bar-bg, --card-shadow-*): per-theme literals
+     that can't be expressed as a single variable swap (gradients,
+     translucent overlays, shadow color/opacity). */
+:root {
+  --navy-950: #050d1f;
+  --navy-900: #0a1f3d;
+  --navy-800: #122b54;
+  --navy-700: #1a3a6e;
+  --navy-600: #254a85;
+  --navy-500: #3a64a8;
+  --navy-400: #6588c4;
+  --navy-300: #9bb5d9;
+  --navy-200: #c8d6ea;
+  --navy-100: #e4ecf7;
+  --navy-50: #f1f4f9;
+  --bg: #fafbfd;
+  --surface: #ffffff;
+  --surface-2: #f6f8fc;
+  --border: #e1e7f1;
+  --border-strong: #d2dceb;
+  --accent: #c89945;
+  --accent-soft: #f0c674; /* lighter gold used inside the active-workout hero on the navy gradient */
+  --success: #1f8a5f;
+  --success-soft: #86d99e; /* lighter green for icons sitting on the navy hero */
+  --warning: #c4751c;
+  --destructive: #dc2626;
+  --destructive-bg: rgba(220, 38, 38, 0.05);
+  --destructive-border: rgba(220, 38, 38, 0.2);
+  --success-bg: rgba(31, 138, 95, 0.06);
+  --success-border: rgba(31, 138, 95, 0.25);
+
+  --hero-bg: linear-gradient(135deg, var(--navy-900) 0%, var(--navy-700) 100%);
+  /* Avatar bubble fallback when the user has no photo. Same family as
+     hero, slightly different angle/order for visual variety. */
+  --avatar-bg: linear-gradient(135deg, var(--navy-700) 0%, var(--navy-900) 100%);
+  /* Whole-page gradient under .app-content + the rotate-warning. */
+  --app-bg-gradient: linear-gradient(180deg, #fafbfd 0%, #f1f4f9 100%);
+  /* Bottom bars (TabBar, BottomBar, etc.) — translucent so backdrop-blur reads. */
+  --bar-bg: rgba(255, 255, 255, 0.92);
+  --bar-bg-tinted: rgba(250, 251, 253, 0.85);
+  /* Backdrop tint behind modals / sheets. */
+  --modal-overlay: rgba(10, 31, 61, 0.35);
+  --modal-overlay-strong: rgba(10, 31, 61, 0.45);
+  --card-shadow-sm: 0 1px 2px rgba(10, 31, 61, 0.04), 0 1px 1px rgba(10, 31, 61, 0.02);
+  --card-shadow-lg: 0 4px 16px rgba(10, 31, 61, 0.08), 0 1px 3px rgba(10, 31, 61, 0.04);
+  --navy-shadow: 0 8px 24px rgba(10, 31, 61, 0.18), 0 2px 6px rgba(10, 31, 61, 0.1);
+  /* Tight ring + drop used on the round avatar bubbles. */
+  --avatar-shadow: 0 0 0 1px var(--border-strong), 0 1px 3px rgba(10, 31, 61, 0.1);
+  --avatar-shadow-lg: 0 0 0 1px var(--border-strong), 0 4px 12px rgba(10, 31, 61, 0.12);
+  /* Pale-gold "coming in v2" banner on the Health stub. */
+  --coming-soon-bg: linear-gradient(135deg, #fbf3e0 0%, var(--surface) 100%);
+  /* Filled primary surface — used by Save/Continue buttons, active
+     chips, weekly-goal dots, etc. Distinct from --navy-900 because
+     navy-900 doubles as the body text color, which has to flip to
+     off-white in dark mode. --primary stays a high-contrast filled
+     color in both modes (white text on top reads). */
+  --primary: var(--navy-900);
+  /* Toggle switch on-state. Light: deep navy (matches primary button).
+     Dark: accent orange so the on-state reads as "active/celebrate"
+     against the dark background instead of a near-white toggle. */
+  --toggle-on: var(--navy-900);
+  --toggle-knob: #ffffff;
+  --grain-tint: rgba(37, 74, 133, 0.04);
+}
+
+[data-theme="dark"] {
+  /* Navy scale inverts: "navy-900" now means the brightest text color
+     so existing components using `text-navy-900` etc. flip correctly
+     without needing per-component edits. */
+  --navy-950: #f7faff;
+  --navy-900: #e8edf2;
+  --navy-800: #d0d7e0;
+  --navy-700: #b9c4d1;
+  --navy-600: #a0acba;
+  --navy-500: #8a9aab;
+  --navy-400: #7d8a9a;
+  --navy-300: #5a6776;
+  --navy-200: #3d4654;
+  --navy-100: #2d3441;
+  --navy-50: #232932;
+  --bg: #0f1419;
+  --surface: #1a1f26;
+  --surface-2: #232932;
+  --border: #2d3441;
+  --border-strong: #3d4654;
+  /* Celebrate color flips from gold to orange — the "earned" accent in
+     dark mode. Variants keep the same role (soft = lighter version
+     used over the hero gradient). */
+  --accent: #d97706;
+  --accent-soft: #fbbf24;
+  /* Success lifts so forest green doesn't disappear against the dark bg. */
+  --success: #34c896;
+  --success-soft: #6ee7b7;
+  --warning: #f59e0b;
+  --destructive: #ef4444;
+  --destructive-bg: rgba(239, 68, 68, 0.10);
+  --destructive-border: rgba(239, 68, 68, 0.35);
+  --success-bg: rgba(52, 200, 150, 0.08);
+  --success-border: rgba(52, 200, 150, 0.30);
+
+  /* Hero gradient: lifted dark surface (option 1 from the palette
+     proposal) instead of redefining navy-900 for backgrounds. Cards
+     using var(--hero-bg) get a quieter, more "elevated" treatment in
+     dark mode and orange accents read against it well. */
+  --hero-bg: linear-gradient(135deg, #1f2733 0%, #2a3340 100%);
+  --avatar-bg: linear-gradient(135deg, #2a3340 0%, #3a4654 100%);
+  --app-bg-gradient: linear-gradient(180deg, #0f1419 0%, #1a1f26 100%);
+  --bar-bg: rgba(20, 25, 32, 0.82);
+  --bar-bg-tinted: rgba(15, 20, 25, 0.85);
+  --modal-overlay: rgba(0, 0, 0, 0.55);
+  --modal-overlay-strong: rgba(0, 0, 0, 0.65);
+  /* Shadows on dark bg need to be deeper black + slightly larger to read. */
+  --card-shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.30), 0 1px 1px rgba(0, 0, 0, 0.18);
+  --card-shadow-lg: 0 6px 22px rgba(0, 0, 0, 0.45), 0 2px 6px rgba(0, 0, 0, 0.25);
+  --navy-shadow: 0 10px 28px rgba(0, 0, 0, 0.55), 0 3px 10px rgba(0, 0, 0, 0.35);
+  --avatar-shadow: 0 0 0 1px var(--border-strong), 0 1px 3px rgba(0, 0, 0, 0.5);
+  --avatar-shadow-lg: 0 0 0 1px var(--border-strong), 0 4px 12px rgba(0, 0, 0, 0.55);
+  /* Coming-soon banner: subtle orange-tinted dark surface (uses the
+     dark-mode accent color so it reads as a quieter version of the
+     hero gradient rather than a totally different palette). */
+  --coming-soon-bg: linear-gradient(135deg, #2a2218 0%, var(--surface) 100%);
+  /* Lifted blue: high-contrast filled primary in dark mode that pairs
+     with white text. Replaces navy-900 for buttons/chips since
+     navy-900 itself flips to off-white (the new body text color). */
+  --primary: #5a8ad6;
+  /* Toggle on flips to accent (orange) so the on-state celebrates
+     instead of fading into the off-white text color. Knob stays
+     near-white but slightly muted so it doesn't glow. */
+  --toggle-on: var(--accent);
+  --toggle-knob: #f0f3f7;
+  --grain-tint: rgba(120, 150, 200, 0.04);
+}
+
+/* --- TYPE / UTILITY CLASSES ---
+   Moved out of an inline <style> in App.jsx so dark-mode overrides above
+   can take effect without duplicating these class definitions. */
+.mono { font-family: 'JetBrains Mono', monospace; font-feature-settings: 'tnum' on; }
+.serif { font-family: 'Fraunces', Georgia, serif; font-optical-sizing: auto; }
+.surface { background: var(--surface); }
+.surface-2 { background: var(--surface-2); }
+.text-navy-900 { color: var(--navy-900); }
+.text-navy-700 { color: var(--navy-700); }
+.text-navy-500 { color: var(--navy-500); }
+.text-navy-400 { color: var(--navy-400); }
+.text-navy-300 { color: var(--navy-300); }
+.bg-navy-900 { background: var(--navy-900); }
+.bg-navy-50 { background: var(--navy-50); }
+.bg-navy-100 { background: var(--navy-100); }
+.border-soft { border-color: var(--border); }
+.border-strong { border-color: var(--border-strong); }
+.scrollbar-hide::-webkit-scrollbar { display: none; }
+.scrollbar-hide { -ms-overflow-style: none; scrollbar-width: none; }
+.card-shadow { box-shadow: var(--card-shadow-sm); }
+.card-shadow-lg { box-shadow: var(--card-shadow-lg); }
+.navy-shadow { box-shadow: var(--navy-shadow); }
+input, textarea {
+  caret-color: var(--navy-900);
+}
+input::selection, textarea::selection {
+  background: var(--navy-200);
+  color: var(--navy-900);
+}
+.grain {
+  position: relative;
+}
+.grain::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background-image: radial-gradient(circle at 20% 30%, var(--grain-tint) 0%, transparent 50%),
+                    radial-gradient(circle at 80% 80%, var(--grain-tint) 0%, transparent 50%);
+  pointer-events: none;
+}
+
 html, body {
   margin: 0;
   padding: 0;

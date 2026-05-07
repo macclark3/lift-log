@@ -50,7 +50,7 @@ export function ForgotPasswordScreen({ onSwitchToLogin }) {
             type="submit"
             disabled={submitting}
             className="w-full text-white py-3.5 rounded-xl font-semibold text-sm disabled:opacity-60 transition"
-            style={{ background: "var(--navy-900)" }}
+            style={{ background: "var(--primary)" }}
           >
             {submitting ? "Sending…" : "Send reset link"}
           </button>
@@ -59,7 +59,7 @@ export function ForgotPasswordScreen({ onSwitchToLogin }) {
             type="button"
             onClick={onSwitchToLogin}
             className="w-full text-white py-3.5 rounded-xl font-semibold text-sm transition"
-            style={{ background: "var(--navy-900)" }}
+            style={{ background: "var(--primary)" }}
           >
             Back to sign in
           </button>

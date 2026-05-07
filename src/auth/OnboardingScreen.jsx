@@ -181,7 +181,7 @@ export function OnboardingScreen({ onComplete, saveError }) {
             onClick={handleContinue}
             disabled={submitting}
             className="w-full text-white py-3.5 rounded-xl font-semibold text-sm disabled:opacity-60 transition"
-            style={{ background: "var(--navy-900)" }}
+            style={{ background: "var(--primary)" }}
           >
             {submitting ? "Saving…" : "Continue"}
           </button>
@@ -214,9 +214,9 @@ function Chip({ active, onClick, children }) {
       onClick={onClick}
       className="shrink-0 px-3 py-1.5 rounded-full text-xs whitespace-nowrap border transition font-medium"
       style={{
-        background: active ? "var(--navy-900)" : "var(--surface)",
+        background: active ? "var(--primary)" : "var(--surface)",
         color: active ? "white" : "var(--navy-600)",
-        borderColor: active ? "var(--navy-900)" : "var(--border)",
+        borderColor: active ? "var(--primary)" : "var(--border)",
       }}
     >
       {children}

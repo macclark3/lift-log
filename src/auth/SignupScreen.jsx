@@ -70,7 +70,7 @@ export function SignupScreen({ onSwitchToLogin }) {
           <button
             onClick={onSwitchToLogin}
             className="w-full text-white py-3.5 rounded-xl font-semibold text-sm transition"
-            style={{ background: "var(--navy-900)" }}
+            style={{ background: "var(--primary)" }}
           >
             Back to sign in
           </button>
@@ -131,7 +131,7 @@ export function SignupScreen({ onSwitchToLogin }) {
           type="submit"
           disabled={submitting}
           className="w-full text-white py-3.5 rounded-xl font-semibold text-sm disabled:opacity-60 transition"
-          style={{ background: "var(--navy-900)" }}
+          style={{ background: "var(--primary)" }}
         >
           {submitting ? "Creating account…" : "Create account"}
         </button>

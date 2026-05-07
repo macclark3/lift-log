@@ -9,7 +9,7 @@ export function AuthLayout({ subtitle, children }) {
       className="min-h-screen flex flex-col items-center justify-center px-5 py-10 pt-safe pb-safe"
       style={{
         fontFamily: "'Inter', -apple-system, BlinkMacSystemFont, system-ui, sans-serif",
-        background: "linear-gradient(180deg, #fafbfd 0%, #f1f4f9 100%)",
+        background: "var(--app-bg-gradient)",
         color: "var(--navy-900)",
       }}
     >
@@ -43,7 +43,7 @@ export function AuthError({ message }) {
   return (
     <div
       className="rounded-xl px-3 py-2.5 text-xs leading-relaxed border"
-      style={{ background: "rgba(220, 38, 38, 0.05)", borderColor: "rgba(220, 38, 38, 0.2)", color: "#dc2626" }}
+      style={{ background: "var(--destructive-bg)", borderColor: "var(--destructive-border)", color: "var(--destructive)" }}
     >
       {message}
     </div>
@@ -55,7 +55,7 @@ export function AuthSuccess({ message }) {
   return (
     <div
       className="rounded-xl px-3 py-2.5 text-xs leading-relaxed border"
-      style={{ background: "rgba(31, 138, 95, 0.06)", borderColor: "rgba(31, 138, 95, 0.25)", color: "var(--success)" }}
+      style={{ background: "var(--success-bg)", borderColor: "var(--success-border)", color: "var(--success)" }}
     >
       {message}
     </div>
@@ -66,7 +66,7 @@ export function AuthLoading() {
   return (
     <div
       className="min-h-screen flex flex-col items-center justify-center"
-      style={{ background: "linear-gradient(180deg, #fafbfd 0%, #f1f4f9 100%)" }}
+      style={{ background: "var(--app-bg-gradient)" }}
     >
       <div className="serif text-3xl tracking-tight" style={{ fontWeight: 500, color: "var(--navy-900)" }}>
         Spotter
@@ -88,7 +88,7 @@ export function ProfileLoadError({ onRetry }) {
       className="min-h-screen flex flex-col items-center justify-center px-6 text-center"
       style={{
         fontFamily: "'Inter', -apple-system, BlinkMacSystemFont, system-ui, sans-serif",
-        background: "linear-gradient(180deg, #fafbfd 0%, #f1f4f9 100%)",
+        background: "var(--app-bg-gradient)",
         color: "var(--navy-900)",
       }}
     >
@@ -102,7 +102,7 @@ export function ProfileLoadError({ onRetry }) {
       <button
         onClick={onRetry}
         className="px-5 py-2.5 rounded-xl text-white font-semibold text-sm transition"
-        style={{ background: "var(--navy-900)" }}
+        style={{ background: "var(--primary)" }}
       >
         Try again
       </button>

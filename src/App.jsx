@@ -1035,6 +1035,29 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [profile, onboardedFlagKey, onboardedFlagSet]);
 
+  // Theme effect: applies the user's chosen theme to <html data-theme=...>
+  // so the [data-theme="dark"] CSS overrides in index.css take effect.
+  // Three modes:
+  //   - 'light' / 'dark': set the attribute literally
+  //   - 'system': follow prefers-color-scheme, and listen for changes so
+  //     the OS-level toggle updates the app live without a sign-out
+  // No profile (signed out / loading) → default to 'light' so the auth
+  // screens render in their existing palette.
+  const themePref = profile?.settings?.theme || "light";
+  useEffect(() => {
+    const root = document.documentElement;
+    if (themePref === "dark" || themePref === "light") {
+      root.setAttribute("data-theme", themePref);
+      return;
+    }
+    // 'system'
+    const mq = window.matchMedia("(prefers-color-scheme: dark)");
+    const apply = () => root.setAttribute("data-theme", mq.matches ? "dark" : "light");
+    apply();
+    mq.addEventListener("change", apply);
+    return () => mq.removeEventListener("change", apply);
+  }, [themePref]);
+
   // Single fetch effect that loads everything the app needs to render the
   // home screen: profile, exercises, plans. All three run in parallel.
   // If exercises is empty (first launch ever for this user) we batch-insert
@@ -1248,7 +1271,7 @@ export default function App() {
       className="rotate-warning min-h-screen flex-col items-center justify-center px-6 text-center"
       style={{
         fontFamily: "'Inter', -apple-system, BlinkMacSystemFont, system-ui, sans-serif",
-        background: "linear-gradient(180deg, #fafbfd 0%, #f1f4f9 100%)",
+        background: "var(--app-bg-gradient)",
       }}
     >
       <Smartphone size={28} className="text-navy-700 mb-3" />
@@ -1257,8 +1280,8 @@ export default function App() {
     </div>
     <div className="app-content min-h-screen text-navy-900" style={{
       fontFamily: "'Inter', -apple-system, BlinkMacSystemFont, system-ui, sans-serif",
-      background: "linear-gradient(180deg, #fafbfd 0%, #f1f4f9 100%)",
-      color: "#0a1f3d",
+      background: "var(--app-bg-gradient)",
+      color: "var(--navy-900)",
       // Bumps fixed-positioned bars (BottomBar in detail edit views) above the
       // minimized workout pill. ~56px pill + safe-area inset, give or take.
       "--bottom-stack-offset": activeWorkout && activeWorkout.minimized
@@ -1274,67 +1297,8 @@ export default function App() {
       // unreachable while a workout is in progress.
       paddingBottom: "var(--bottom-stack-offset, 0px)",
     }}>
-      <style>{`
-        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600;9..144,700&family=JetBrains+Mono:wght@400;500;600&display=swap');
-        :root {
-          --navy-950: #050d1f;
-          --navy-900: #0a1f3d;
-          --navy-800: #122b54;
-          --navy-700: #1a3a6e;
-          --navy-600: #254a85;
-          --navy-500: #3a64a8;
-          --navy-400: #6588c4;
-          --navy-300: #9bb5d9;
-          --navy-200: #c8d6ea;
-          --navy-100: #e4ecf7;
-          --navy-50: #f1f4f9;
-          --bg: #fafbfd;
-          --surface: #ffffff;
-          --surface-2: #f6f8fc;
-          --border: #e1e7f1;
-          --border-strong: #d2dceb;
-          --accent: #c89945;
-          --success: #1f8a5f;
-          --warning: #c4751c;
-        }
-        .mono { font-family: 'JetBrains Mono', monospace; font-feature-settings: 'tnum' on; }
-        .serif { font-family: 'Fraunces', Georgia, serif; font-optical-sizing: auto; }
-        .surface { background: var(--surface); }
-        .surface-2 { background: var(--surface-2); }
-        .text-navy-900 { color: var(--navy-900); }
-        .text-navy-700 { color: var(--navy-700); }
-        .text-navy-500 { color: var(--navy-500); }
-        .text-navy-400 { color: var(--navy-400); }
-        .text-navy-300 { color: var(--navy-300); }
-        .bg-navy-900 { background: var(--navy-900); }
-        .bg-navy-50 { background: var(--navy-50); }
-        .bg-navy-100 { background: var(--navy-100); }
-        .border-soft { border-color: var(--border); }
-        .border-strong { border-color: var(--border-strong); }
-        .scrollbar-hide::-webkit-scrollbar { display: none; }
-        .scrollbar-hide { -ms-overflow-style: none; scrollbar-width: none; }
-        .card-shadow { box-shadow: 0 1px 2px rgba(10, 31, 61, 0.04), 0 1px 1px rgba(10, 31, 61, 0.02); }
-        .card-shadow-lg { box-shadow: 0 4px 16px rgba(10, 31, 61, 0.08), 0 1px 3px rgba(10, 31, 61, 0.04); }
-        .navy-shadow { box-shadow: 0 8px 24px rgba(10, 31, 61, 0.18), 0 2px 6px rgba(10, 31, 61, 0.1); }
-        input, textarea {
-          caret-color: var(--navy-900);
-        }
-        input::selection, textarea::selection {
-          background: var(--navy-200);
-          color: var(--navy-900);
-        }
-        .grain {
-          position: relative;
-        }
-        .grain::before {
-          content: '';
-          position: absolute;
-          inset: 0;
-          background-image: radial-gradient(circle at 20% 30%, rgba(37, 74, 133, 0.04) 0%, transparent 50%),
-                            radial-gradient(circle at 80% 80%, rgba(37, 74, 133, 0.03) 0%, transparent 50%);
-          pointer-events: none;
-        }
-      `}</style>
+      {/* Palette + utility classes moved into src/index.css so the
+          [data-theme="dark"] overrides defined there can apply. */}
 
       {authShell || (
       <div className="max-w-md mx-auto min-h-screen relative grain" style={{ background: "var(--bg)" }}>
@@ -1564,7 +1528,7 @@ function Header({ tab, view, activeWorkout, profile, onBack, onCancelWorkout, on
   const showProfileBubble = !inWorkoutView && view?.type !== "profile" && view?.type !== "profile-edit";
 
   return (
-    <div className="sticky top-0 z-10 backdrop-blur-xl border-b border-soft pt-safe" style={{ background: "rgba(250, 251, 253, 0.85)" }}>
+    <div className="sticky top-0 z-10 backdrop-blur-xl border-b border-soft pt-safe" style={{ background: "var(--bar-bg-tinted)" }}>
       <div className="px-5 pt-5 pb-4 flex items-center justify-between gap-3">
         {showBack && (
           <button onClick={onBack} className="w-9 h-9 -ml-2 flex items-center justify-center text-navy-500 hover:text-navy-900 shrink-0 transition">
@@ -1604,9 +1568,9 @@ function ProfileBubble({ profile, onClick }) {
       onClick={onClick}
       className="w-10 h-10 rounded-full shrink-0 overflow-hidden border-2 transition active:scale-95 flex items-center justify-center text-white font-semibold text-sm card-shadow"
       style={{
-        background: profile.photo ? "transparent" : "linear-gradient(135deg, var(--navy-700) 0%, var(--navy-900) 100%)",
+        background: profile.photo ? "transparent" : "var(--avatar-bg)",
         borderColor: "var(--surface)",
-        boxShadow: "0 0 0 1px var(--border-strong), 0 1px 3px rgba(10, 31, 61, 0.1)",
+        boxShadow: "var(--avatar-shadow)",
       }}
       aria-label="Open profile"
     >
@@ -1635,7 +1599,7 @@ function TabBar({ tab, onChange }) {
     { id: "health", icon: Heart, label: "Health" },
   ];
   return (
-    <div className="backdrop-blur-xl border-t border-soft px-2 pb-safe" style={{ background: "rgba(255, 255, 255, 0.92)" }}>
+    <div className="backdrop-blur-xl border-t border-soft px-2 pb-safe" style={{ background: "var(--bar-bg)" }}>
       <div className="flex items-center justify-around py-2">
         {tabs.map(t => {
           const Icon = t.icon;
@@ -1682,7 +1646,7 @@ function MinimizedWorkoutBar({ workout, onResume }) {
       <button
         onClick={onResume}
         className="w-full rounded-xl px-4 py-2.5 flex items-center gap-3 transition active:scale-[0.99] navy-shadow"
-        style={{ background: "linear-gradient(135deg, var(--navy-900) 0%, var(--navy-700) 100%)" }}
+        style={{ background: "var(--hero-bg)" }}
         aria-label="Resume workout"
       >
         <div className="flex items-center gap-1.5 shrink-0">
@@ -1804,14 +1768,14 @@ function HomeView({ recentSessions, recentExercisesList, sessions, history, plan
           else onStartBlank();
         }}
         className="mt-5 w-full bg-navy-900 text-white py-6 rounded-3xl font-semibold text-base flex items-center justify-center gap-2.5 navy-shadow active:scale-[0.98] transition"
-        style={{ background: "var(--navy-900)" }}
+        style={{ background: "var(--primary)" }}
       >
         <Play size={20} strokeWidth={2.5} fill="currentColor" />
         {activeWorkout ? "Resume Workout" : "Start Workout"}
       </button>
 
       {showPlanPicker && (
-        <div className="fixed inset-0 z-30 bg-navy-900/30 backdrop-blur-sm flex items-end justify-center" style={{ background: "rgba(10, 31, 61, 0.35)" }} onClick={() => setShowPlanPicker(false)}>
+        <div className="fixed inset-0 z-30 bg-navy-900/30 backdrop-blur-sm flex items-end justify-center" style={{ background: "var(--modal-overlay)" }} onClick={() => setShowPlanPicker(false)}>
           <div className="max-w-md w-full surface border-t border-soft rounded-t-3xl p-5 pb-8" onClick={e => e.stopPropagation()}>
             <div className="w-10 h-1 rounded-full mx-auto mb-5" style={{ background: "var(--border-strong)" }} />
             <div className="text-[10px] uppercase tracking-[0.18em] text-navy-400 mono font-medium mb-3">Choose a plan</div>
@@ -1857,7 +1821,7 @@ function HomeView({ recentSessions, recentExercisesList, sessions, history, plan
                       key={`g-${i}`}
                       className="w-2.5 h-2.5 rounded-full"
                       style={{
-                        background: done ? "var(--navy-900)" : "transparent",
+                        background: done ? "var(--primary)" : "transparent",
                         border: done ? "none" : "2px solid var(--border-strong)",
                       }}
                     />
@@ -2072,7 +2036,7 @@ function LibraryView({ exercises, lastByExercise, onCreate, onEdit, onSelect }) 
       <button
         onClick={onCreate}
         className="fixed bottom-20 right-5 z-10 w-14 h-14 rounded-full bg-navy-900 text-white flex items-center justify-center navy-shadow hover:scale-105 active:scale-95 transition"
-        style={{ background: "var(--navy-900)" }}
+        style={{ background: "var(--primary)" }}
       >
         <Plus size={22} strokeWidth={2.5} />
       </button>
@@ -2086,9 +2050,9 @@ function FilterChip({ active, onClick, children }) {
       onClick={onClick}
       className="shrink-0 px-3 py-1.5 rounded-full text-xs whitespace-nowrap border transition font-medium"
       style={{
-        background: active ? "var(--navy-900)" : "var(--surface)",
+        background: active ? "var(--primary)" : "var(--surface)",
         color: active ? "white" : "var(--navy-600)",
-        borderColor: active ? "var(--navy-900)" : "var(--border)",
+        borderColor: active ? "var(--primary)" : "var(--border)",
       }}
     >
       {children}
@@ -2136,7 +2100,7 @@ function ExerciseEditView({ exercise, initialName, defaultUnit = "lb", saveError
       {saveError && (
         <div
           className="mt-5 rounded-xl px-3 py-2.5 text-xs leading-relaxed border"
-          style={{ background: "rgba(220, 38, 38, 0.05)", borderColor: "rgba(220, 38, 38, 0.2)", color: "#dc2626" }}
+          style={{ background: "var(--destructive-bg)", borderColor: "var(--destructive-border)", color: "var(--destructive)" }}
         >
           {saveError}
         </div>
@@ -2293,7 +2257,7 @@ function ExerciseEditView({ exercise, initialName, defaultUnit = "lb", saveError
             }}
             disabled={customizing}
             className="flex-1 py-3 rounded-xl text-white font-semibold text-sm disabled:opacity-60 transition"
-            style={{ background: "var(--navy-900)" }}
+            style={{ background: "var(--primary)" }}
           >
             {customizing ? "Customizing…" : "Customize"}
           </button>
@@ -2302,7 +2266,7 @@ function ExerciseEditView({ exercise, initialName, defaultUnit = "lb", saveError
             onClick={() => canSave && onSave({ id: exercise?.id, name: name.trim(), muscle, equipment, targetReps: [minReps, maxReps], unit, tracksWeight, trackingMode, bumpRule, increment })}
             disabled={!canSave}
             className="flex-1 py-3 rounded-xl text-white font-semibold text-sm disabled:opacity-30 transition"
-            style={{ background: "var(--navy-900)" }}
+            style={{ background: "var(--primary)" }}
           >
             Save
           </button>
@@ -2322,7 +2286,7 @@ function ExerciseEditModal({ initialName, defaultUnit, saveError, onSave, onCanc
   return (
     <div className="fixed inset-0 z-40 overflow-y-auto" style={{ background: "var(--bg)" }}>
       <div className="max-w-md mx-auto min-h-full">
-        <div className="sticky top-0 z-10 backdrop-blur-xl border-b border-soft pt-safe" style={{ background: "rgba(250, 251, 253, 0.85)" }}>
+        <div className="sticky top-0 z-10 backdrop-blur-xl border-b border-soft pt-safe" style={{ background: "var(--bar-bg-tinted)" }}>
           <div className="px-5 pt-5 pb-4 flex items-center gap-3">
             <button onClick={onCancel} className="w-9 h-9 -ml-2 flex items-center justify-center text-navy-500 hover:text-navy-900 shrink-0 transition" aria-label="Cancel">
               <ChevronLeft size={22} />
@@ -2358,8 +2322,8 @@ function RadioRow({ label, hint, active, onClick }) {
       }}
     >
       <div className="w-4 h-4 rounded-full border-2 shrink-0 mt-0.5 flex items-center justify-center transition" style={{
-        borderColor: active ? "var(--navy-900)" : "var(--border-strong)",
-        background: active ? "var(--navy-900)" : "transparent",
+        borderColor: active ? "var(--primary)" : "var(--border-strong)",
+        background: active ? "var(--primary)" : "transparent",
       }}>
         {active && <div className="w-1.5 h-1.5 rounded-full bg-white" />}
       </div>
@@ -2388,7 +2352,7 @@ function BottomBar({ children }) {
   return (
     <div
       className="fixed left-0 right-0 backdrop-blur-xl border-t border-soft"
-      style={{ background: "rgba(255, 255, 255, 0.92)", bottom: "var(--bottom-stack-offset, 0px)" }}
+      style={{ background: "var(--bar-bg)", bottom: "var(--bottom-stack-offset, 0px)" }}
     >
       <div className="max-w-md mx-auto px-5 py-3 flex gap-2">{children}</div>
     </div>
@@ -2625,7 +2589,7 @@ function SessionDetailView({ session, entries, exercises, lastByExercise, settin
   return (
     <div className="px-5 pb-32">
       {/* Hero card */}
-      <div className="mt-5 rounded-2xl p-5 card-shadow-lg border border-soft" style={{ background: "linear-gradient(135deg, var(--navy-900) 0%, var(--navy-700) 100%)" }}>
+      <div className="mt-5 rounded-2xl p-5 card-shadow-lg border border-soft" style={{ background: "var(--hero-bg)" }}>
         <div className="text-[10px] uppercase tracking-[0.18em] text-white/60 mono font-medium">{formatLongDate(session.startedAt)}</div>
         {editing ? (
           <input
@@ -2663,7 +2627,7 @@ function SessionDetailView({ session, entries, exercises, lastByExercise, settin
             onClick={() => !hasActiveWorkout && onResume?.(session.id)}
             disabled={hasActiveWorkout}
             className="w-full text-white py-3 rounded-xl text-sm font-semibold flex items-center justify-center gap-2 disabled:opacity-50 transition"
-            style={{ background: "var(--navy-900)" }}
+            style={{ background: "var(--primary)" }}
           >
             <Play size={14} strokeWidth={2.5} fill="currentColor" /> Resume
           </button>
@@ -2686,9 +2650,9 @@ function SessionDetailView({ session, entries, exercises, lastByExercise, settin
               }}
               className="flex-1 py-2.5 rounded-xl text-sm font-medium flex items-center justify-center gap-1.5 transition border"
               style={{
-                borderColor: confirmDelete ? "#dc2626" : "var(--border)",
-                color: confirmDelete ? "#dc2626" : "var(--navy-700)",
-                background: confirmDelete ? "rgba(220, 38, 38, 0.05)" : "var(--surface)",
+                borderColor: confirmDelete ? "var(--destructive)" : "var(--border)",
+                color: confirmDelete ? "var(--destructive)" : "var(--navy-700)",
+                background: confirmDelete ? "var(--destructive-bg)" : "var(--surface)",
               }}
             >
               <Trash2 size={13} /> {confirmDelete ? "Tap to confirm" : "Delete"}
@@ -2704,7 +2668,7 @@ function SessionDetailView({ session, entries, exercises, lastByExercise, settin
       {librarySaveError && (
         <div
           className="mt-3 rounded-xl px-3 py-2.5 text-xs leading-relaxed border"
-          style={{ background: "rgba(220, 38, 38, 0.05)", borderColor: "rgba(220, 38, 38, 0.2)", color: "#dc2626" }}
+          style={{ background: "var(--destructive-bg)", borderColor: "var(--destructive-border)", color: "var(--destructive)" }}
         >
           {librarySaveError}
         </div>
@@ -2809,7 +2773,7 @@ function SessionDetailView({ session, entries, exercises, lastByExercise, settin
               }
             }}
             className="flex-1 py-3 rounded-xl text-white font-semibold text-sm transition"
-            style={{ background: "var(--navy-900)" }}
+            style={{ background: "var(--primary)" }}
           >
             Done
           </button>
@@ -2859,7 +2823,7 @@ function EditableEntry({ entry, libEx, onWeightChange, onRepsChange, onNoteChang
             else setConfirmRemove(true);
           }}
           className="text-xs flex items-center gap-1 transition shrink-0"
-          style={{ color: confirmRemove ? "#dc2626" : "var(--navy-400)" }}
+          style={{ color: confirmRemove ? "var(--destructive)" : "var(--navy-400)" }}
         >
           <Trash2 size={12} />
           {confirmRemove ? "Confirm" : "Remove"}
@@ -2980,7 +2944,7 @@ function PlansView({ plans, onCreate, onEdit, onUse }) {
           <button
             onClick={onCreate}
             className="px-5 py-3 rounded-xl text-white font-semibold text-sm transition"
-            style={{ background: "var(--navy-900)" }}
+            style={{ background: "var(--primary)" }}
           >
             Create your first plan
           </button>
@@ -3074,7 +3038,7 @@ function PlanEditView({ plan, exercises, lastByExercise, defaultUnit, saveError,
       {saveError && pendingNewExerciseName === null && (
         <div
           className="mt-5 rounded-xl px-3 py-2.5 text-xs leading-relaxed border"
-          style={{ background: "rgba(220, 38, 38, 0.05)", borderColor: "rgba(220, 38, 38, 0.2)", color: "#dc2626" }}
+          style={{ background: "var(--destructive-bg)", borderColor: "var(--destructive-border)", color: "var(--destructive)" }}
         >
           {saveError}
         </div>
@@ -3132,7 +3096,7 @@ function PlanEditView({ plan, exercises, lastByExercise, defaultUnit, saveError,
 
       <BottomBar>
         <button onClick={onCancel} className="flex-1 py-3 rounded-xl border border-soft text-navy-700 font-medium text-sm">Cancel</button>
-        <button onClick={() => canSave && onSave({ id: plan?.id, name, description, exercises: planExercises })} disabled={!canSave} className="flex-1 py-3 rounded-xl text-white font-semibold text-sm disabled:opacity-30 transition" style={{ background: "var(--navy-900)" }}>
+        <button onClick={() => canSave && onSave({ id: plan?.id, name, description, exercises: planExercises })} disabled={!canSave} className="flex-1 py-3 rounded-xl text-white font-semibold text-sm disabled:opacity-30 transition" style={{ background: "var(--primary)" }}>
           Save plan
         </button>
       </BottomBar>
@@ -3176,7 +3140,7 @@ function ExerciseSearchSheet({ exercises, lastByExercise, excluded = [], onPick,
   const showCreate = search.trim().length > 0 && !exactMatch;
 
   return (
-    <div className="fixed inset-0 z-30 backdrop-blur-sm" style={{ background: "rgba(10, 31, 61, 0.35)" }} onClick={onClose}>
+    <div className="fixed inset-0 z-30 backdrop-blur-sm" style={{ background: "var(--modal-overlay)" }} onClick={onClose}>
       <div
         className="absolute inset-x-0 max-w-md mx-auto surface border-t border-soft rounded-t-3xl flex flex-col"
         style={{
@@ -3345,7 +3309,7 @@ function ProfileView({ profile, sessions, history, exercises, onEdit, onOpenSett
   return (
     <div className="px-5 pb-28">
       {/* Hero card */}
-      <div className="mt-5 rounded-2xl p-6 card-shadow-lg" style={{ background: "linear-gradient(135deg, var(--navy-900) 0%, var(--navy-700) 100%)" }}>
+      <div className="mt-5 rounded-2xl p-6 card-shadow-lg" style={{ background: "var(--hero-bg)" }}>
         <div className="flex items-center gap-4">
           <div
             className="w-20 h-20 rounded-full overflow-hidden flex items-center justify-center shrink-0"
@@ -3456,7 +3420,7 @@ function ProfileView({ profile, sessions, history, exercises, onEdit, onOpenSett
 
       {/* CSV fallback modal — shown when direct download isn't available (sandboxed previews) */}
       {csvFallback && (
-        <div className="fixed inset-0 z-30 backdrop-blur-sm flex items-end" style={{ background: "rgba(10, 31, 61, 0.45)" }} onClick={() => setCsvFallback(null)}>
+        <div className="fixed inset-0 z-30 backdrop-blur-sm flex items-end" style={{ background: "var(--modal-overlay-strong)" }} onClick={() => setCsvFallback(null)}>
           <div
             className="max-w-md w-full mx-auto surface border-t border-soft rounded-t-3xl p-5 pb-8 flex flex-col"
             style={{ maxHeight: "85vh" }}
@@ -3479,7 +3443,7 @@ function ProfileView({ profile, sessions, history, exercises, onEdit, onOpenSett
               <button
                 onClick={handleCopy}
                 className="flex-1 py-3 rounded-xl text-white font-semibold text-sm transition flex items-center justify-center gap-2"
-                style={{ background: copied ? "var(--success)" : "var(--navy-900)" }}
+                style={{ background: copied ? "var(--success)" : "var(--primary)" }}
               >
                 {copied ? <><Check size={14} strokeWidth={2.5} /> Copied</> : <><Download size={14} /> Copy CSV</>}
               </button>
@@ -3607,9 +3571,9 @@ function ProfileEditView({ profile, saveError, onSave, onCancel }) {
         <div
           className="w-24 h-24 rounded-full overflow-hidden flex items-center justify-center relative"
           style={{
-            background: draft.photo ? "transparent" : "linear-gradient(135deg, var(--navy-700) 0%, var(--navy-900) 100%)",
+            background: draft.photo ? "transparent" : "var(--avatar-bg)",
             border: "3px solid var(--surface)",
-            boxShadow: "0 0 0 1px var(--border-strong), 0 4px 12px rgba(10, 31, 61, 0.12)",
+            boxShadow: "var(--avatar-shadow-lg)",
           }}
         >
           {draft.photo ? (
@@ -3640,7 +3604,7 @@ function ProfileEditView({ profile, saveError, onSave, onCancel }) {
       {bannerError && (
         <div
           className="mt-5 rounded-xl px-3 py-2.5 text-xs leading-relaxed border"
-          style={{ background: "rgba(220, 38, 38, 0.05)", borderColor: "rgba(220, 38, 38, 0.2)", color: "#dc2626" }}
+          style={{ background: "var(--destructive-bg)", borderColor: "var(--destructive-border)", color: "var(--destructive)" }}
         >
           {bannerError}
         </div>
@@ -3745,7 +3709,7 @@ function ProfileEditView({ profile, saveError, onSave, onCancel }) {
           onClick={() => canSave && handleSave()}
           disabled={!canSave}
           className="flex-1 py-3 rounded-xl text-white font-semibold text-sm disabled:opacity-30 transition"
-          style={{ background: "var(--navy-900)" }}
+          style={{ background: "var(--primary)" }}
         >
           Save
         </button>
@@ -3833,7 +3797,7 @@ function HealthView() {
   ];
   return (
     <div className="px-5 pb-28">
-      <div className="mt-5 rounded-2xl p-5 border border-soft card-shadow" style={{ background: "linear-gradient(135deg, #fbf3e0 0%, var(--surface) 100%)" }}>
+      <div className="mt-5 rounded-2xl p-5 border border-soft card-shadow" style={{ background: "var(--coming-soon-bg)" }}>
         <div className="flex items-center gap-1.5 mb-2">
           <div className="w-1.5 h-1.5 rounded-full" style={{ background: "var(--accent)" }} />
           <div className="text-[10px] uppercase tracking-[0.18em] mono font-semibold" style={{ color: "var(--accent)" }}>Coming in v2</div>
@@ -3914,7 +3878,7 @@ function ExerciseDetailView({ entries, libEx, onEdit, onCustomize }) {
       <button
         onClick={() => isPublic ? onCustomize?.() : onEdit?.(libEx.id)}
         className="mt-4 w-full text-white py-3 rounded-xl font-semibold text-sm flex items-center justify-center gap-2 transition"
-        style={{ background: "var(--navy-900)" }}
+        style={{ background: "var(--primary)" }}
       >
         {isPublic ? <><Sparkles size={14} /> Customize</> : <><Edit3 size={14} /> Edit defaults</>}
       </button>
@@ -3928,7 +3892,7 @@ function ExerciseDetailView({ entries, libEx, onEdit, onCustomize }) {
       {/* Last-time hero + history list — only when the user has logged
           this exercise at least once. */}
       {latest && (
-        <div className="mt-7 rounded-2xl p-5 card-shadow-lg" style={{ background: "linear-gradient(135deg, var(--navy-900) 0%, var(--navy-700) 100%)" }}>
+        <div className="mt-7 rounded-2xl p-5 card-shadow-lg" style={{ background: "var(--hero-bg)" }}>
           <div className="flex items-center gap-2 mb-3">
             <Clock size={12} className="text-white/60" />
             <div className="text-[10px] uppercase tracking-[0.18em] text-white/60 mono font-medium">Last time · {formatDate(latest.date)}</div>
@@ -3954,9 +3918,9 @@ function ExerciseDetailView({ entries, libEx, onEdit, onCustomize }) {
           {latest.note && <div className="mt-3 text-xs text-white/70 italic">"{latest.note}"</div>}
           {prog && (
             <div className="mt-4 rounded-lg p-3 flex items-start gap-2.5" style={{ background: "rgba(255,255,255,0.08)" }}>
-              {prog.status === "bump" && <Flame size={14} style={{ color: "#f0c674" }} className="mt-0.5 shrink-0" />}
+              {prog.status === "bump" && <Flame size={14} style={{ color: "var(--accent-soft)" }} className="mt-0.5 shrink-0" />}
               {prog.status === "hold" && <Minus size={14} className="text-white/60 mt-0.5 shrink-0" />}
-              {prog.status === "progress" && <TrendingUp size={14} style={{ color: "#86d99e" }} className="mt-0.5 shrink-0" />}
+              {prog.status === "progress" && <TrendingUp size={14} style={{ color: "var(--success-soft)" }} className="mt-0.5 shrink-0" />}
               <div className="text-xs text-white/90 leading-relaxed">{prog.message}</div>
             </div>
           )}
@@ -4144,9 +4108,9 @@ function WorkoutView({ workout, setWorkout, exercises, lastByExercise, settings,
                 onClick={() => setActiveExercise(i)}
                 className="shrink-0 px-3 py-1.5 rounded-full text-xs whitespace-nowrap border transition font-medium"
                 style={{
-                  background: i === activeIdx ? "var(--navy-900)" : "var(--surface)",
+                  background: i === activeIdx ? "var(--primary)" : "var(--surface)",
                   color: i === activeIdx ? "white" : "var(--navy-600)",
-                  borderColor: i === activeIdx ? "var(--navy-900)" : "var(--border)",
+                  borderColor: i === activeIdx ? "var(--primary)" : "var(--border)",
                 }}
               >
                 {ex.exercise.split(" ").slice(0,2).join(" ")} {completed > 0 && <span className="ml-1 mono">{completed}/{ex.reps.length}</span>}
@@ -4170,7 +4134,7 @@ function WorkoutView({ workout, setWorkout, exercises, lastByExercise, settings,
       </button>
 
       {showFinish && (
-        <div className="fixed inset-0 z-30 backdrop-blur-sm flex items-end" style={{ background: "rgba(10, 31, 61, 0.35)" }} onClick={() => !finishing && setShowFinish(false)}>
+        <div className="fixed inset-0 z-30 backdrop-blur-sm flex items-end" style={{ background: "var(--modal-overlay)" }} onClick={() => !finishing && setShowFinish(false)}>
           <div className="max-w-md w-full mx-auto surface border-t border-soft rounded-t-3xl p-5 pb-8" onClick={e => e.stopPropagation()}>
             <div className="w-10 h-1 rounded-full mx-auto mb-5" style={{ background: "var(--border-strong)" }} />
             <div className="text-[10px] uppercase tracking-[0.18em] text-navy-500 mono font-medium mb-2">Name this workout</div>
@@ -4178,7 +4142,7 @@ function WorkoutView({ workout, setWorkout, exercises, lastByExercise, settings,
             {librarySaveError && (
               <div
                 className="mt-3 rounded-xl px-3 py-2.5 text-xs leading-relaxed border"
-                style={{ background: "rgba(220, 38, 38, 0.05)", borderColor: "rgba(220, 38, 38, 0.2)", color: "#dc2626" }}
+                style={{ background: "var(--destructive-bg)", borderColor: "var(--destructive-border)", color: "var(--destructive)" }}
               >
                 {librarySaveError}
               </div>
@@ -4195,7 +4159,7 @@ function WorkoutView({ workout, setWorkout, exercises, lastByExercise, settings,
         </div>
       )}
 
-      <div className="fixed bottom-0 left-0 right-0 backdrop-blur-xl border-t border-soft" style={{ background: "rgba(255, 255, 255, 0.92)" }}>
+      <div className="fixed bottom-0 left-0 right-0 backdrop-blur-xl border-t border-soft" style={{ background: "var(--bar-bg)" }}>
         <div className="max-w-md mx-auto px-5 py-3">
           <button onClick={() => setShowFinish(true)} className="w-full text-white py-3.5 rounded-full font-semibold text-sm flex items-center justify-center gap-2 navy-shadow transition" style={{ background: "var(--success)" }}>
             <Check size={18} strokeWidth={2.5} /> Finish Workout
@@ -4369,7 +4333,7 @@ function ActiveExercise({ ex, showLevelUpAlerts = true, onUpdate, onRemove }) {
       )}
 
       {showWeightCard ? (
-        <div className="rounded-2xl p-5 card-shadow-lg" style={{ background: "linear-gradient(135deg, var(--navy-900) 0%, var(--navy-700) 100%)" }}>
+        <div className="rounded-2xl p-5 card-shadow-lg" style={{ background: "var(--hero-bg)" }}>
           <div className="text-[10px] uppercase tracking-[0.18em] text-white/60 mono font-medium mb-3">Weight</div>
           <div className="flex items-center justify-between gap-3">
             <button onClick={() => adjustWeight(-(ex.increment ?? 5))} className="w-12 h-12 rounded-full flex items-center justify-center transition shrink-0 active:scale-95" style={{ background: "rgba(255,255,255,0.12)", color: "white" }}>
@@ -4422,7 +4386,7 @@ function ActiveExercise({ ex, showLevelUpAlerts = true, onUpdate, onRemove }) {
         <div className="flex items-center justify-between mb-3">
           <div className="text-[10px] uppercase tracking-[0.18em] text-navy-500 mono font-medium">Sets · target {ex.targetReps[0]}–{ex.targetReps[1]} {setNoun}</div>
           {restTimer && (
-            <button onClick={() => setRestTimer(null)} className="flex items-center gap-1.5 text-[10px] mono uppercase tracking-wider px-2 py-1 rounded-full font-semibold" style={{ color: "var(--success)", background: "rgba(31, 138, 95, 0.1)" }}>
+            <button onClick={() => setRestTimer(null)} className="flex items-center gap-1.5 text-[10px] mono uppercase tracking-wider px-2 py-1 rounded-full font-semibold" style={{ color: "var(--success)", background: "var(--success-bg)" }}>
               <Clock size={10} /> rest {Math.floor(restElapsed/60)}:{String(restElapsed%60).padStart(2,"0")}
             </button>
           )}
@@ -4456,7 +4420,7 @@ function ActiveExercise({ ex, showLevelUpAlerts = true, onUpdate, onRemove }) {
               else setConfirmRemove(true);
             }}
             className="text-xs flex items-center gap-1.5 transition shrink-0"
-            style={{ color: confirmRemove ? "#dc2626" : "var(--navy-400)" }}
+            style={{ color: confirmRemove ? "var(--destructive)" : "var(--navy-400)" }}
           >
             <Trash2 size={12} />
             {confirmRemove ? "Tap to confirm" : "Remove"}
@@ -4471,7 +4435,7 @@ function ActiveExercise({ ex, showLevelUpAlerts = true, onUpdate, onRemove }) {
             else setConfirmRemove(true);
           }}
           className="mt-3 text-xs flex items-center gap-1.5 transition"
-          style={{ color: confirmRemove ? "#dc2626" : "var(--navy-400)" }}
+          style={{ color: confirmRemove ? "var(--destructive)" : "var(--navy-400)" }}
         >
           <Trash2 size={12} />
           {confirmRemove ? "Tap to confirm removal" : "Remove this exercise"}
@@ -4487,8 +4451,8 @@ function SetRow({ setNum, reps, lastReps, targetMax, unitSuffix = "", step = 1, 
     <div
       className="flex items-center gap-2 p-2 rounded-xl border transition"
       style={{
-        background: reps > 0 ? hitTarget ? "rgba(31, 138, 95, 0.06)" : "var(--surface)" : "var(--surface-2)",
-        borderColor: reps > 0 ? hitTarget ? "rgba(31, 138, 95, 0.25)" : "var(--border)" : "var(--border)",
+        background: reps > 0 ? hitTarget ? "var(--success-bg)" : "var(--surface)" : "var(--surface-2)",
+        borderColor: reps > 0 ? hitTarget ? "var(--success-border)" : "var(--border)" : "var(--border)",
       }}
     >
       <div className="w-9 h-9 rounded-lg flex items-center justify-center text-[10px] uppercase tracking-wider mono shrink-0 font-semibold" style={{ background: "var(--navy-50)", color: "var(--navy-600)" }}>{setNum}</div>
@@ -4533,7 +4497,7 @@ function SettingsView({ settings, onChange, onDeleteAccount, saveError }) {
       {saveError && (
         <div
           className="mt-5 rounded-xl px-3 py-2.5 text-xs leading-relaxed border"
-          style={{ background: "rgba(220, 38, 38, 0.05)", borderColor: "rgba(220, 38, 38, 0.2)", color: "#dc2626" }}
+          style={{ background: "var(--destructive-bg)", borderColor: "var(--destructive-border)", color: "var(--destructive)" }}
         >
           {saveError}
         </div>
@@ -4541,7 +4505,7 @@ function SettingsView({ settings, onChange, onDeleteAccount, saveError }) {
 
       {/* Appearance */}
       <SettingsSection label="Appearance">
-        <SettingsRow icon={Sun} label="Theme" hint="Phase A: persists your choice. The dark mode visual swap lands in a follow-up.">
+        <SettingsRow icon={Sun} label="Theme" hint="System follows your device's light/dark preference.">
           <div className="flex flex-wrap gap-1.5 mt-2">
             <SettingsChip active={settings.theme === "light"} onClick={() => onChange({ theme: "light" })}>Light</SettingsChip>
             <SettingsChip active={settings.theme === "dark"} onClick={() => onChange({ theme: "dark" })}>Dark</SettingsChip>
@@ -4624,11 +4588,11 @@ function SettingsView({ settings, onChange, onDeleteAccount, saveError }) {
           className="w-full p-4 flex items-center gap-3 transition text-left hover:bg-navy-50 border-t"
           style={{ borderColor: "var(--border)" }}
         >
-          <div className="w-10 h-10 rounded-xl flex items-center justify-center shrink-0" style={{ background: "rgba(220, 38, 38, 0.08)" }}>
-            <AlertTriangle size={18} style={{ color: "#dc2626" }} />
+          <div className="w-10 h-10 rounded-xl flex items-center justify-center shrink-0" style={{ background: "var(--destructive-bg)" }}>
+            <AlertTriangle size={18} style={{ color: "var(--destructive)" }} />
           </div>
           <div className="flex-1 min-w-0">
-            <div className="font-semibold" style={{ color: "#dc2626" }}>Delete account</div>
+            <div className="font-semibold" style={{ color: "var(--destructive)" }}>Delete account</div>
             <div className="text-xs text-navy-500 mt-0.5">Permanently remove your data from Spotter.</div>
           </div>
           <ChevronRight size={16} className="text-navy-300 shrink-0" />
@@ -4685,9 +4649,9 @@ function SettingsChip({ active, onClick, children }) {
       onClick={onClick}
       className="shrink-0 px-3 py-1.5 rounded-full text-xs whitespace-nowrap border transition font-medium"
       style={{
-        background: active ? "var(--navy-900)" : "var(--surface)",
+        background: active ? "var(--primary)" : "var(--surface)",
         color: active ? "white" : "var(--navy-600)",
-        borderColor: active ? "var(--navy-900)" : "var(--border)",
+        borderColor: active ? "var(--primary)" : "var(--border)",
       }}
     >
       {children}
@@ -4696,7 +4660,10 @@ function SettingsChip({ active, onClick, children }) {
 }
 
 // Toggle switch — visual swap at ~10% scale of an iOS-style switch.
-// Tappable on the whole element.
+// Tappable on the whole element. Uses --toggle-on so dark mode can
+// flip from "navy" to "accent orange" without redefining navy-900
+// itself (which doubles as the body text color and would inappropriately
+// brighten the on-state in dark mode).
 function ToggleSwitch({ on, onChange, ariaLabel }) {
   return (
     <button
@@ -4706,11 +4673,14 @@ function ToggleSwitch({ on, onChange, ariaLabel }) {
       aria-label={ariaLabel}
       onClick={() => onChange(!on)}
       className="shrink-0 w-11 h-6 rounded-full relative transition"
-      style={{ background: on ? "var(--navy-900)" : "var(--border-strong)" }}
+      style={{ background: on ? "var(--toggle-on)" : "var(--border-strong)" }}
     >
       <span
-        className="absolute top-0.5 w-5 h-5 rounded-full bg-white shadow transition-all"
-        style={{ left: on ? "calc(100% - 1.375rem)" : "0.125rem" }}
+        className="absolute top-0.5 w-5 h-5 rounded-full shadow transition-all"
+        style={{
+          left: on ? "calc(100% - 1.375rem)" : "0.125rem",
+          background: "var(--toggle-knob)",
+        }}
       />
     </button>
   );
@@ -4733,8 +4703,8 @@ function DeleteAccountView({ email: initialEmail, onCancel, onDelete, deleteErro
     return (
       <div className="px-5 pb-28">
         <div className="mt-7 surface border border-soft card-shadow rounded-2xl p-5">
-          <div className="w-12 h-12 rounded-2xl flex items-center justify-center mb-4" style={{ background: "rgba(220, 38, 38, 0.08)" }}>
-            <AlertTriangle size={22} style={{ color: "#dc2626" }} />
+          <div className="w-12 h-12 rounded-2xl flex items-center justify-center mb-4" style={{ background: "var(--destructive-bg)" }}>
+            <AlertTriangle size={22} style={{ color: "var(--destructive)" }} />
           </div>
           <div className="serif text-2xl text-navy-900 mb-2" style={{ fontWeight: 500 }}>Delete your Spotter account?</div>
           <div className="text-sm text-navy-600 leading-relaxed">
@@ -4749,7 +4719,7 @@ function DeleteAccountView({ email: initialEmail, onCancel, onDelete, deleteErro
           <button
             onClick={() => setStep("reauth")}
             className="flex-1 py-3 rounded-xl text-white font-semibold text-sm transition"
-            style={{ background: "#dc2626" }}
+            style={{ background: "var(--destructive)" }}
           >
             Continue
           </button>
@@ -4811,7 +4781,7 @@ function DeleteAccountView({ email: initialEmail, onCancel, onDelete, deleteErro
         {(authError || deleteError) && (
           <div
             className="rounded-xl px-3 py-2.5 text-xs leading-relaxed border"
-            style={{ background: "rgba(220, 38, 38, 0.05)", borderColor: "rgba(220, 38, 38, 0.2)", color: "#dc2626" }}
+            style={{ background: "var(--destructive-bg)", borderColor: "var(--destructive-border)", color: "var(--destructive)" }}
           >
             {authError || deleteError}
           </div>
@@ -4823,7 +4793,7 @@ function DeleteAccountView({ email: initialEmail, onCancel, onDelete, deleteErro
           type="submit"
           disabled={submitting || !email || !password}
           className="flex-1 py-3 rounded-xl text-white font-semibold text-sm disabled:opacity-50 transition"
-          style={{ background: "#dc2626" }}
+          style={{ background: "var(--destructive)" }}
         >
           {submitting ? "Deleting…" : "Delete account"}
         </button>
