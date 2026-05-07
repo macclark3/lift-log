@@ -20,7 +20,7 @@ export function LoginScreen({ onSwitchToSignup, onSwitchToForgot }) {
   };
 
   return (
-    <AuthLayout subtitle="Welcome back.">
+    <AuthLayout subtitle="Let's get back to work.">
       <form
         onSubmit={handleSubmit}
         className="surface border border-soft card-shadow rounded-2xl p-6 space-y-4"
